@@ -18,7 +18,6 @@ use anyhow::{anyhow, bail, Result};
 use enum_map::Enum;
 use risc0_binfmt::{ByteAddr, WordAddr};
 
-
 use super::{
     platform::*,
     poseidon2::{Poseidon2, Poseidon2State},
@@ -156,7 +155,7 @@ fn check_aligned_addr(addr: ByteAddr) -> Result<WordAddr> {
 }
 
 pub struct Risc0Machine<'a, T: Risc0Context> {
-pub(crate)    ctx: &'a mut T,
+    pub(crate) ctx: &'a mut T,
 }
 
 impl<'a, T: Risc0Context> Risc0Machine<'a, T> {
@@ -192,14 +191,19 @@ impl<'a, T: Risc0Context> Risc0Machine<'a, T> {
     }
 
     fn machine_ecall(&mut self) -> Result<bool> {
-        match self.load_register(REG_A7)? {
+        let syscall_num = self.load_register(REG_A7)?;
+        tracing::trace!("machine_ecall: syscall_num = {syscall_num}");
+        match syscall_num {
             HOST_ECALL_TERMINATE => self.ecall_terminate(),
             HOST_ECALL_READ => self.ecall_read(),
             HOST_ECALL_WRITE => self.ecall_write(),
             HOST_ECALL_POSEIDON2 => self.ecall_poseidon2(),
             HOST_ECALL_SHA2 => self.ecall_sha2(),
             HOST_ECALL_BIGINT => self.ecall_bigint(),
-            _ => unimplemented!(),
+            _ => {
+                tracing::error!("Unknown machine ecall: {syscall_num}");
+                self.trap(Exception::InvalidEcallDispatch(syscall_num))
+            }
         }
     }
 
@@ -255,15 +259,26 @@ impl<'a, T: Risc0Context> Risc0Machine<'a, T> {
         let fd = self.load_register(REG_A0)?;
         let mut ptr = ByteAddr(self.load_register(REG_A1)?);
         let len = self.load_register(REG_A2)?;
+
+        // Validate buffer address and length
+        if ptr.0 == 0 {
+            bail!("Invalid buffer address (null pointer) in host read");
+        }
         if ptr + len < ptr {
             bail!("Invalid length in host read: {len}");
         }
         if len > MAX_IO_BYTES {
             bail!("Invalid length (too big) in host read: {len}");
         }
+
+        // Validate that the entire buffer is in valid memory
         if len > 0 {
-            guest_addr(ptr.0)?;
+            let end_addr = ptr + len;
+            if !is_user_memory(ptr) || !is_user_memory(end_addr - risc0_binfmt::ByteAddr(1)) {
+                bail!("Buffer address range not in user memory: {ptr:?} to {end_addr:?}");
+            }
         }
+
         tracing::trace!("ecall_read({fd}, {ptr:?}, {len})");
         let mut bytes = vec![0u8; len as usize];
         let mut rlen = self.ctx.host_read(fd, &mut bytes)?;
@@ -462,7 +477,7 @@ impl<'a, T: Risc0Context> Risc0Machine<'a, T> {
         }
     }
 
-    pub(crate)fn dump_registers(&mut self, is_machine_mode: bool) -> Result<()> {
+    pub(crate) fn dump_registers(&mut self, is_machine_mode: bool) -> Result<()> {
         let base_addr = if is_machine_mode {
             tracing::trace!("machine registers:");
             MACHINE_REGS_ADDR.waddr()
