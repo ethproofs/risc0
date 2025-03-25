@@ -14,7 +14,7 @@
 
 // TODO: This file
 
-use revm_methods::{EC_ADD_ELF, EC_ADD_ID, EC_MUL_ELF, EC_MUL_ID};
+use revm_methods::{EC_ADD_ELF, EC_ADD_ID, EC_MUL_ELF, EC_MUL_ID, EC_PAIRING_ELF, EC_PAIRING_ID};
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 
 /// Prove and get the receipt for an example of an elliptic curve addition
@@ -101,6 +101,36 @@ fn prove_mul() -> Receipt {
     prover.prove(env, EC_MUL_ELF).unwrap().receipt
 }
 
+/// Prove and get the receipt for an example of an elliptic curve pairing
+///
+/// Corresponds to the EVM ecPairing precompile, see https://www.evm.codes/precompiled?fork=cancun#0x08
+fn prove_pairing() -> Receipt {
+    // TODO: Use nontrivial points
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let x1 = [0u8; 32];
+    let y1 = [0u8; 32];
+    let x2 = [0u8; 32];
+    let y2 = [0u8; 32];
+    let mut input: Vec<u8> = x0.into();
+    input.extend_from_slice(&y0);
+    input.extend_from_slice(&x1);
+    input.extend_from_slice(&y1);
+    input.extend_from_slice(&x2);
+    input.extend_from_slice(&y2);
+
+    let env = ExecutorEnv::builder()
+        .write(&input)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let prover = default_prover();
+
+    prover.prove(env, EC_PAIRING_ELF).unwrap().receipt
+}
+
 fn main() {
     let receipt = prove_add();
     receipt.verify(EC_ADD_ID).unwrap();
@@ -119,6 +149,15 @@ fn main() {
         .decode()
         .expect("Journal should contain a Vec with the `bytes` of the PrecompileResult");  // TODO: Not quite accurate now
     println!("Result of EC Mul: {result:?}");
+
+    let receipt = prove_pairing();
+    receipt.verify(EC_PAIRING_ID).unwrap();
+
+    let result: Vec<u8> = receipt
+        .journal
+        .decode()
+        .expect("Journal should contain a Vec with the `bytes` of the PrecompileResult");  // TODO: Not quite accurate now
+    println!("Result of EC Pairing: {result:?}");
 }
 
 #[test]
@@ -146,8 +185,6 @@ fn test_mul() {
     assert_eq!(
         result,  // TODO: Real test
         vec![
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
