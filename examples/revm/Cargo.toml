@@ -1,0 +1,24 @@
+[package]
+name = "revm-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# TODO: not sure about c-kzg here but it worries me a bit
+# c-kzg = { git = "https://github.com/risc0/c-kzg-4844.git", rev = "304eacb4f5fec09e837936e4ada6705ecac581f0", default-features = false, features = [
+#     "std"
+# ] }
+hex = "0.4.3"
+revm-methods = { path = "methods" }
+revm-precompile = "6"
+risc0-zkvm = { path = "../../risc0/zkvm" }
+
+[features]
+cuda = ["risc0-zkvm/cuda"]
+default = []
+prove = ["risc0-zkvm/prove"]
+
+
+# [patch.crates-io]
+# TODO: Not thrilled about this approach, required by the c-kzg example
+# c-kzg = { git = "https://github.com/risc0/c-kzg-4844.git", rev = "304eacb4f5fec09e837936e4ada6705ecac581f0" }
