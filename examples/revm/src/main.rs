@@ -20,17 +20,7 @@ use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 /// Prove and get the receipt for an example of an elliptic curve addition
 ///
 /// Corresponds to the EVM ecAdd precompile, see https://www.evm.codes/precompiled?fork=cancun#0x06
-fn prove_add() -> Receipt {
-    // TODO: Use nontrivial points
-    // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let x1 = [0u8; 32];
-    let y1 = [0u8; 32];
-    let mut input: Vec<u8> = x0.into();
-    input.extend_from_slice(&y0);
-    input.extend_from_slice(&x1);
-    input.extend_from_slice(&y1);
+fn prove_add(input: Vec<u8>) -> Receipt {
     // TODO: Deprecate, right?
     // // g1 and g2 are the generators from EIP-197
     // let g1_compressed =
@@ -63,15 +53,7 @@ fn prove_add() -> Receipt {
 /// Prove and get the receipt for an example of an elliptic curve multiplication
 ///
 /// Corresponds to the EVM ecMul precompile, see https://www.evm.codes/precompiled?fork=cancun#0x07
-fn prove_mul() -> Receipt {
-    // TODO: Use nontrivial points
-    // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let s = [47u8; 32];
-    let mut input: Vec<u8> = x0.into();
-    input.extend_from_slice(&y0);
-    input.extend_from_slice(&s);
+fn prove_mul(input: Vec<u8>) -> Receipt {
     // TODO: Deprecate, right?
     // // g1 and g2 are the generators from EIP-197
     // let g1_compressed =
@@ -104,22 +86,7 @@ fn prove_mul() -> Receipt {
 /// Prove and get the receipt for an example of an elliptic curve pairing
 ///
 /// Corresponds to the EVM ecPairing precompile, see https://www.evm.codes/precompiled?fork=cancun#0x08
-fn prove_pairing() -> Receipt {
-    // TODO: Use nontrivial points
-    // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let x1 = [0u8; 32];
-    let y1 = [0u8; 32];
-    let x2 = [0u8; 32];
-    let y2 = [0u8; 32];
-    let mut input: Vec<u8> = x0.into();
-    input.extend_from_slice(&y0);
-    input.extend_from_slice(&x1);
-    input.extend_from_slice(&y1);
-    input.extend_from_slice(&x2);
-    input.extend_from_slice(&y2);
-
+fn prove_pairing(input: Vec<u8>) -> Receipt {
     let env = ExecutorEnv::builder()
         .write(&input)
         .unwrap()
@@ -132,7 +99,17 @@ fn prove_pairing() -> Receipt {
 }
 
 fn main() {
-    let receipt = prove_add();
+    // TODO: Use nontrivial points
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let x1 = [0u8; 32];
+    let y1 = [0u8; 32];
+    let mut add_input: Vec<u8> = x0.into();
+    add_input.extend_from_slice(&y0);
+    add_input.extend_from_slice(&x1);
+    add_input.extend_from_slice(&y1);
+    let receipt = prove_add(add_input);
     receipt.verify(EC_ADD_ID).unwrap();
 
     let result: Vec<u8> = receipt
@@ -141,7 +118,15 @@ fn main() {
         .expect("Journal should contain a Vec with the `bytes` of the PrecompileResult");  // TODO: Not quite accurate now
     println!("Result of EC Add: {result:?}");
 
-    let receipt = prove_mul();
+    // TODO: Use nontrivial points
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let s = [47u8; 32];
+    let mut mul_input: Vec<u8> = x0.into();
+    mul_input.extend_from_slice(&y0);
+    mul_input.extend_from_slice(&s);
+    let receipt = prove_mul(mul_input);
     receipt.verify(EC_MUL_ID).unwrap();
 
     let result: Vec<u8> = receipt
@@ -150,7 +135,21 @@ fn main() {
         .expect("Journal should contain a Vec with the `bytes` of the PrecompileResult");  // TODO: Not quite accurate now
     println!("Result of EC Mul: {result:?}");
 
-    let receipt = prove_pairing();
+    // TODO: Use nontrivial points
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let x1 = [0u8; 32];
+    let y1 = [0u8; 32];
+    let x2 = [0u8; 32];
+    let y2 = [0u8; 32];
+    let mut pair_input: Vec<u8> = x0.into();
+    pair_input.extend_from_slice(&y0);
+    pair_input.extend_from_slice(&x1);
+    pair_input.extend_from_slice(&y1);
+    pair_input.extend_from_slice(&x2);
+    pair_input.extend_from_slice(&y2);
+    let receipt = prove_pairing(pair_input);
     receipt.verify(EC_PAIRING_ID).unwrap();
 
     let result: Vec<u8> = receipt
@@ -161,8 +160,18 @@ fn main() {
 }
 
 #[test]
-fn test_add() {
-    let result: Vec<u8> = prove_add().journal.decode().unwrap();
+fn test_add_trivial() {
+    // TODO: Use nontrivial points
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let x1 = [0u8; 32];
+    let y1 = [0u8; 32];
+    let mut input: Vec<u8> = x0.into();
+    input.extend_from_slice(&y0);
+    input.extend_from_slice(&x1);
+    input.extend_from_slice(&y1);
+    let result: Vec<u8> = prove_add(input).journal.decode().unwrap();
     assert_eq!(
         result,  // TODO: Real test
         vec![
@@ -180,8 +189,15 @@ fn test_add() {
 }
 
 #[test]
-fn test_mul() {
-    let result: Vec<u8> = prove_mul().journal.decode().unwrap();
+fn test_mul_trivial() {
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let s = [47u8; 32];
+    let mut input: Vec<u8> = x0.into();
+    input.extend_from_slice(&y0);
+    input.extend_from_slice(&s);
+    let result: Vec<u8> = prove_mul(input).journal.decode().unwrap();
     assert_eq!(
         result,  // TODO: Real test
         vec![
@@ -191,6 +207,36 @@ fn test_mul() {
             0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        "TODO: Message on failure"
+    );
+}
+
+#[test]
+fn test_pairing_trivial() {
+    // TODO: More efficient ways to initialize, but who cares, right?
+    let x0 = [0u8; 32];
+    let y0 = [0u8; 32];
+    let x1 = [0u8; 32];
+    let y1 = [0u8; 32];
+    let x2 = [0u8; 32];
+    let y2 = [0u8; 32];
+    let mut input: Vec<u8> = x0.into();
+    input.extend_from_slice(&y0);
+    input.extend_from_slice(&x1);
+    input.extend_from_slice(&y1);
+    input.extend_from_slice(&x2);
+    input.extend_from_slice(&y2);
+    let result: Vec<u8> = prove_pairing(input).journal.decode().unwrap();
+    assert_eq!(
+        result,  // TODO: Real test
+        vec![
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 1,
         ],
         "TODO: Message on failure"
     );
