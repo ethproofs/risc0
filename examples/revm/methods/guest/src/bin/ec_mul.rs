@@ -16,12 +16,12 @@ use risc0_zkvm::guest::env;
 
 fn main() {
     let inp: Vec<u8> = env::read();
-    assert_eq!(inp.len(), 128, "EVM ecAdd precompile input must be 128 bytes");
+    assert_eq!(inp.len(), 96, "EVM ecMul precompile input must be 96 bytes");
 
-    let result = revm_precompile::bn128::run_add(&inp, 150, 150).unwrap();
-    assert_eq!(result.gas_used, 150);
+    let result = revm_precompile::bn128::run_mul(&inp, 6000, 6000).unwrap();
+    assert_eq!(result.gas_used, 6000);
 
     let output: Vec<u8> = result.bytes.into();
-    
+
     env::commit(&output);
 }
