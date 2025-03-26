@@ -137,18 +137,19 @@ fn main() {
 
     // TODO: Use nontrivial points
     // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let x1 = [0u8; 32];
-    let y1 = [0u8; 32];
-    let x2 = [0u8; 32];
-    let y2 = [0u8; 32];
+    let x0 = hex::decode("2cf44499d5d27bb186308b7af7af02ac5bc9eeb6a3d147c186b21fb1b76e18da").unwrap();
     let mut pair_input: Vec<u8> = x0.into();
-    pair_input.extend_from_slice(&y0);
-    pair_input.extend_from_slice(&x1);
-    pair_input.extend_from_slice(&y1);
-    pair_input.extend_from_slice(&x2);
-    pair_input.extend_from_slice(&y2);
+    pair_input.extend_from_slice(&hex::decode("2c0f001f52110ccfe69108924926e45f0b0c868df0e7bde1fe16d3242dc715f6").unwrap());
+    pair_input.extend_from_slice(&hex::decode("1fb19bb476f6b9e44e2a32234da8212f61cd63919354bc06aef31e3cfaff3ebc").unwrap());
+    pair_input.extend_from_slice(&hex::decode("22606845ff186793914e03e21df544c34ffe2f2f3504de8a79d9159eca2d98d9").unwrap());
+    pair_input.extend_from_slice(&hex::decode("2bd368e28381e8eccb5fa81fc26cf3f048eea9abfdd85d7ed3ab3698d63e4f90").unwrap());
+    pair_input.extend_from_slice(&hex::decode("2fe02e47887507adf0ff1743cbac6ba291e66f59be6bd763950bb16041a0a85e").unwrap());
+    pair_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000001").unwrap());
+    pair_input.extend_from_slice(&hex::decode("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45").unwrap());
+    pair_input.extend_from_slice(&hex::decode("1971ff0471b09fa93caaf13cbf443c1aede09cc4328f5a62aad45f40ec133eb4").unwrap());
+    pair_input.extend_from_slice(&hex::decode("091058a3141822985733cbdddfed0fd8d6c104e9e9eff40bf5abfef9ab163bc7").unwrap());
+    pair_input.extend_from_slice(&hex::decode("2a23af9a5ce2ba2796c1f4e453a370eb0af8c212d9dc9acd8fc02c2e907baea2").unwrap());
+    pair_input.extend_from_slice(&hex::decode("23a8eb0b0996252cb548a4487da97b02422ebc0e834613f954de6c7e0afdc1fc").unwrap());
     let receipt = prove_pairing(pair_input);
     receipt.verify(EC_PAIRING_ID).unwrap();
 

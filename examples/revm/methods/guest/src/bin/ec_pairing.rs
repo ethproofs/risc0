@@ -16,10 +16,11 @@ use risc0_zkvm::guest::env;
 
 fn main() {
     let inp: Vec<u8> = env::read();
-    assert_eq!(inp.len(), 192, "EVM ecPairing precompile input must be 192 bytes");
+    // assert_eq!(inp.len(), 192, "EVM ecPairing precompile input must be 192 bytes");  // Allow different run lengths TODO
 
-    let result = revm_precompile::bn128::run_pair(&inp, 45000, 34000, 113000).unwrap();
-    assert_eq!(result.gas_used, 79000);
+    // let result = revm_precompile::bn128::run_pair(&inp, 45000, 34000, 113000).unwrap();
+    let result = revm_precompile::bn128::run_pair(&inp, 45000, 34000, 400000000).unwrap();
+    // assert_eq!(result.gas_used, 79000);  // Allow different run lengths TODO
 
     let output: Vec<u8> = result.bytes.into();
 
