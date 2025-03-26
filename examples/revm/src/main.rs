@@ -101,14 +101,18 @@ fn prove_pairing(input: Vec<u8>) -> Receipt {
 fn main() {
     // TODO: Use nontrivial points
     // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let x1 = [0u8; 32];
-    let y1 = [0u8; 32];
-    let mut add_input: Vec<u8> = x0.into();
-    add_input.extend_from_slice(&y0);
-    add_input.extend_from_slice(&x1);
-    add_input.extend_from_slice(&y1);
+    // let x0 = [0u8; 32];
+    // let y0 = [0u8; 32];
+    // let x1 = [0u8; 32];
+    // let y1 = [0u8; 32];
+    // let mut add_input: Vec<u8> = x0.into();
+    // add_input.extend_from_slice(&y0);
+    // add_input.extend_from_slice(&x1);
+    // add_input.extend_from_slice(&y1);
+    let mut add_input: Vec<u8> = hex::decode("0000000000000000000000000000000000000000000000000000000000000001").unwrap().into();
+    add_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000002").unwrap());
+    add_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000001").unwrap());
+    add_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000002").unwrap());
     let receipt = prove_add(add_input);
     receipt.verify(EC_ADD_ID).unwrap();
 
@@ -120,12 +124,15 @@ fn main() {
 
     // TODO: Use nontrivial points
     // TODO: More efficient ways to initialize, but who cares, right?
-    let x0 = [0u8; 32];
-    let y0 = [0u8; 32];
-    let s = [47u8; 32];
-    let mut mul_input: Vec<u8> = x0.into();
-    mul_input.extend_from_slice(&y0);
-    mul_input.extend_from_slice(&s);
+    // let x0 = [0u8; 32];
+    // let y0 = [0u8; 32];
+    // let s = [47u8; 32];
+    // let mut mul_input: Vec<u8> = x0.into();
+    // mul_input.extend_from_slice(&y0);
+    // mul_input.extend_from_slice(&s);
+    let mut mul_input: Vec<u8> = hex::decode("0000000000000000000000000000000000000000000000000000000000000001").unwrap().into();
+    mul_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000002").unwrap());
+    mul_input.extend_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000002").unwrap());
     let receipt = prove_mul(mul_input);
     receipt.verify(EC_MUL_ID).unwrap();
 
