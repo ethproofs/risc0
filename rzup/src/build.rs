@@ -225,22 +225,6 @@ pub fn build_rust_toolchain(
         "-Cpasses=loweratomic"
     };
 
-    run_command_and_stream_output(
-        "./x",
-        &["build"],
-        Some(&repo_dir),
-        &[(
-            "CARGO_TARGET_RISCV32IM_RISC0_ZKVM_ELF_RUSTFLAGS",
-            lower_atomic,
-        )],
-        |line| {
-            env.emit(RzupEvent::BuildingRustToolchainUpdate {
-                message: line.into(),
-            });
-        },
-    )
-    .map_err(|e| RzupError::Other(format!("failed to run Rust toolchain build: {e}")))?;
-
     env.emit(RzupEvent::BuildingRustToolchainUpdate {
         message: "./x build --stage 2".into(),
     });
