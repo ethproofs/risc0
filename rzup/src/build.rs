@@ -215,10 +215,6 @@ pub fn build_rust_toolchain(
 
     std::fs::write(repo_dir.join("config.toml"), CONFIG_TOML)?;
 
-    env.emit(RzupEvent::BuildingRustToolchainUpdate {
-        message: "./x build".into(),
-    });
-
     let lower_atomic = if version > semver::Version::new(1, 81, 0) {
         "-Cpasses=lower-atomic"
     } else {
@@ -254,11 +250,19 @@ pub fn build_rust_toolchain(
     }
 
     let (stage2, stage2_tools) = find_build_directories(&repo_dir.join("build"))?;
-    std::fs::rename(stage2, &dest_dir)?;
+    if path.is_some() {
+        copy_dir(&stage2, &dest_dir)?;
+    } else {
+        std::fs::rename(stage2, &dest_dir)?;
+    }
 
     for tool in std::fs::read_dir(stage2_tools)? {
         let tool = tool?;
-        std::fs::rename(tool.path(), dest_dir.join("bin").join(tool.file_name()))?;
+        if path.is_some() {
+            std::fs::copy(tool.path(), dest_dir.join("bin").join(tool.file_name()))?;
+        } else {
+            std::fs::rename(tool.path(), dest_dir.join("bin").join(tool.file_name()))?;
+        }
     }
 
     env.emit(RzupEvent::DoneBuildingRustToolchain {
@@ -266,4 +270,15 @@ pub fn build_rust_toolchain(
     });
 
     Ok(version)
+}
+
+fn copy_dir(source: &Path, dest: &Path) -> Result<()> {
+    let mut options = fs_extra::dir::CopyOptions::new();
+    options.overwrite = true;
+    options.copy_inside = true;
+    options.content_only = true;
+    options.depth = 0;
+
+    fs_extra::dir::copy(source, dest, &options)?;
+    Ok(())
 }

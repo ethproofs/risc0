@@ -6292,6 +6292,7 @@ dependencies = [
  "colored",
  "flate2",
  "fs2",
+ "fs_extra",
  "http-body-util",
  "hyper 1.5.1",
  "hyper-util",

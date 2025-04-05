@@ -2416,15 +2416,6 @@ mod tests {
                     message: "cloning git repository".into(),
                 },
                 RzupEvent::BuildingRustToolchainUpdate {
-                    message: "./x build".into(),
-                },
-                RzupEvent::BuildingRustToolchainUpdate {
-                    message: "build output line 1".into(),
-                },
-                RzupEvent::BuildingRustToolchainUpdate {
-                    message: "build output line 2".into(),
-                },
-                RzupEvent::BuildingRustToolchainUpdate {
                     message: "./x build --stage 2".into(),
                 },
                 RzupEvent::BuildingRustToolchainUpdate {
@@ -2449,6 +2440,7 @@ mod tests {
                 .0,
             version
         );
+        assert!(!test_repo.join("build").join("foo").join("stage2").exists());
 
         std::fs::remove_dir_all(tmp_dir.path().join(".risc0/tmp")).unwrap();
         assert_files(
@@ -2459,6 +2451,20 @@ mod tests {
                 format!(".risc0/toolchains/v{version}-rust-x86_64-unknown-linux-gnu/bin/rustc"),
             ],
         );
+
+        let (tmp_dir, mut rzup) = setup_test_env(
+            server.base_urls.clone(),
+            None,
+            Platform::new("x86_64", Os::Linux),
+        );
+
+        let (test_repo, _) = create_fake_rust_repo(&tmp_dir);
+        let repo_url = format!("file://{}", test_repo.display());
+        let repo_path = format!("{}", test_repo.display());
+
+        rzup.build_rust_toolchain(&repo_url, &None, &Some(repo_path))
+            .unwrap();
+        assert!(test_repo.join("build").join("foo").join("stage2").exists())
     }
 
     #[test]
