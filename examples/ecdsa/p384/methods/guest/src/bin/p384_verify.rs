@@ -12,13 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use p256::{
+use p384::{
     ecdsa::{signature::Verifier, Signature, VerifyingKey},
     EncodedPoint,
 };
 use risc0_zkvm::guest::env;
 
 fn main() {
+    // TODO: Quick tests of field inversion
+    let one = p384::FieldElement::ONE;
+    let two = one + one;
+    let two_inv = two.invert().unwrap();
+    assert_eq!(one, two * two_inv);
+
+    let one = p384::Scalar::ONE;
+    let two = one + one;
+    let two_inv = two.invert().unwrap();
+    assert_eq!(one, two * two_inv);
+
     // Decode the verifying key, message, and signature from the inputs.
     let (encoded_verifying_key, message, signature): (EncodedPoint, Vec<u8>, Signature) =
         env::read();
@@ -28,17 +39,6 @@ fn main() {
     verifying_key
         .verify(&message, &signature)
         .expect("ECDSA signature verification failed");
-
-    // TODO: Quick tests of field inversion
-    let one = p256::FieldElement::ONE;
-    let two = one + one;
-    let two_inv = two.invert().unwrap();
-    assert_eq!(one, two * two_inv);
-
-    let one = p256::Scalar::ONE;
-    let two = one + one;
-    let two_inv = two.invert().unwrap();
-    assert_eq!(one, two * two_inv);
 
     // Commit to the journal the verifying key and message that was signed.
     env::commit(&(encoded_verifying_key, message));

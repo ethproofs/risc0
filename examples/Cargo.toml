@@ -15,6 +15,7 @@ members = [
   "digital-signature/core",
   "ecdsa/k256",
   "ecdsa/p256",
+  "ecdsa/p384",
   "groth16-verifier",
   "hello-world",
   "json",
