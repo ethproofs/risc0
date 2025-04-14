@@ -44,5 +44,5 @@ fn main() {
     env::commit(&(encoded_verifying_key, message));
 
     // TODO: Deliberately Failing:
-    assert_eq!(one, two, "TODO this _should_ fail");
+    assert_eq!(one, two, "TODO: SUCCESS! (because this _should_ fail)");
 }
