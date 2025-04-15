@@ -246,12 +246,10 @@ constexpr Mux5Layout kDataLayout =
                                 .data = Reg4LayoutArray{
                                     /*offset=*/12, /*offset=*/13, /*offset=*/14, /*offset=*/15}},
                         .inB =
-                            RecursionImplWomPlonkElementLayout{.addr = /*offset=*/16,
-                                                               .data = Reg4LayoutArray{
-                                                                   /*offset=*/17,
-                                                                   /*offset=*/18,
-                                                                   /*offset=*/19,
-                                                                   /*offset=*/20}},
+                            RecursionImplWomPlonkElementLayout{
+                                .addr = /*offset=*/16,
+                                .data = Reg4LayoutArray{
+                                    /*offset=*/17, /*offset=*/18, /*offset=*/19, /*offset=*/20}},
                         .out =
                             RecursionImplWomPlonkElementLayout{
                                 .addr = /*offset=*/21,

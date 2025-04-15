@@ -37,7 +37,7 @@ Fp step_verify_bytes(void* ctx, HostBridge host, size_t steps, size_t cycle, Fp*
   std::array<Fp, 96> host_args;
   std::array<Fp, 32> host_outs;
   // loc(unknown)
-  Fp x0(0);
+  constexpr Fp x0(0);
   return x0;
 }
 

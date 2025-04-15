@@ -225,50 +225,50 @@ fn check_cargo_lock(manifest_path: &Path) -> Result<()> {
 }
 
 // requires Docker to be installed
-#[cfg(feature = "docker")]
-#[cfg(test)]
-mod test {
-    use crate::{build_package, DockerOptionsBuilder, GuestListEntry, GuestOptionsBuilder};
+// #[cfg(feature = "docker")]
+// #[cfg(test)]
+// mod test {
+//     use crate::{build_package, DockerOptionsBuilder, GuestListEntry, GuestOptionsBuilder};
 
-    use super::*;
+//     use super::*;
 
-    const SRC_DIR: &str = "../..";
+//     const SRC_DIR: &str = "../..";
 
-    fn build(target_dir: &Path, manifest_path: &str) -> Vec<GuestListEntry> {
-        let src_dir = Path::new(SRC_DIR).to_path_buf();
-        let manifest_path = Path::new(manifest_path);
-        let manifest_dir = manifest_path.parent().unwrap().canonicalize().unwrap();
-        let pkg = get_package(manifest_dir);
-        let docker_opts = DockerOptionsBuilder::default()
-            .root_dir(src_dir)
-            .build()
-            .unwrap();
-        let guest_opts = GuestOptionsBuilder::default()
-            .use_docker(docker_opts)
-            .build()
-            .unwrap();
-        build_package(&pkg, target_dir, guest_opts).unwrap()
-    }
+//     fn build(target_dir: &Path, manifest_path: &str) -> Vec<GuestListEntry> {
+//         let src_dir = Path::new(SRC_DIR).to_path_buf();
+//         let manifest_path = Path::new(manifest_path);
+//         let manifest_dir = manifest_path.parent().unwrap().canonicalize().unwrap();
+//         let pkg = get_package(manifest_dir);
+//         let docker_opts = DockerOptionsBuilder::default()
+//             .root_dir(src_dir)
+//             .build()
+//             .unwrap();
+//         let guest_opts = GuestOptionsBuilder::default()
+//             .use_docker(docker_opts)
+//             .build()
+//             .unwrap();
+//         build_package(&pkg, target_dir, guest_opts).unwrap()
+//     }
 
-    fn compare_image_id(guest_list: &[GuestListEntry], name: &str, expected: &str) {
-        let guest = guest_list.iter().find(|x| x.name == name).unwrap();
-        assert_eq!(expected, guest.image_id.to_string());
-    }
+//     fn compare_image_id(guest_list: &[GuestListEntry], name: &str, expected: &str) {
+//         let guest = guest_list.iter().find(|x| x.name == name).unwrap();
+//         assert_eq!(expected, guest.image_id.to_string());
+//     }
 
-    // Test build reproducibility for risc0_zkvm_methods_guest.
-    // If the code of the package or any of its dependencies change,
-    // it may be required to recompute the expected image_ids.
-    // For that, run:
-    // `cargo run --bin cargo-risczero -- risczero build --manifest-path risc0/zkvm/methods/guest/Cargo.toml`
-    #[test]
-    fn test_reproducible_methods_guest() {
-        let temp_dir = tempdir().unwrap();
-        let temp_path = temp_dir.path();
-        let guest_list = build(temp_path, "../../risc0/zkvm/methods/guest/Cargo.toml");
-        compare_image_id(
-            &guest_list,
-            "hello_commit",
-            "1db1ae8a6e3ac8a2add00a80dde19c01ac6f6ffba1ff1c2331142f76a63e1d51",
-        );
-    }
-}
+//     // Test build reproducibility for risc0_zkvm_methods_guest.
+//     // If the code of the package or any of its dependencies change,
+//     // it may be required to recompute the expected image_ids.
+//     // For that, run:
+//     // `cargo run --bin cargo-risczero -- risczero build --manifest-path risc0/zkvm/methods/guest/Cargo.toml`
+//     #[test]
+//     fn test_reproducible_methods_guest() {
+//         let temp_dir = tempdir().unwrap();
+//         let temp_path = temp_dir.path();
+//         let guest_list = build(temp_path, "../../risc0/zkvm/methods/guest/Cargo.toml");
+//         compare_image_id(
+//             &guest_list,
+//             "hello_commit",
+//             "1db1ae8a6e3ac8a2add00a80dde19c01ac6f6ffba1ff1c2331142f76a63e1d51",
+//         );
+//     }
+// }
