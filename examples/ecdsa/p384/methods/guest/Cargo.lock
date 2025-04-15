@@ -866,6 +866,7 @@ dependencies = [
  "bytemuck",
  "ecdsa",
  "elliptic-curve",
+ "hex-literal",
  "primeorder",
  "risc0-bigint2",
  "serdect",
@@ -878,6 +879,7 @@ version = "0.1.0"
 dependencies = [
  "hex-literal",
  "p384",
+ "primeorder",
  "risc0-zkvm",
 ]
 

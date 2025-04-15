@@ -15,3 +15,10 @@ risc0-zkvm = { path = "../../../risc0/zkvm" }
 cuda = ["risc0-zkvm/cuda"]
 default = []
 prove = ["risc0-zkvm/prove"]
+
+
+
+[patch.crates-io]
+# TODO: patch is here...
+# p384 = { git = "https://github.com/preston4896/RustCrypto-elliptic-curves", branch = "risczero" }
+p384 = { path = "/Users/tzerrell/code/external/RustCrypto-elliptic-curves/p384" }

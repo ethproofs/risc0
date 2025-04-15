@@ -16,7 +16,9 @@ p384 = { version = "=0.13.0", features = [
 	"expose-field",
 	"std",
 	"ecdsa",
+	"test-vectors",
 ], default-features = false }
+primeorder = "0.13.6"
 
 [patch.crates-io]
 # Placing these patch statement in the workspace Cargo.toml will add RISC Zero SHA-256 and bigint
@@ -25,6 +27,7 @@ sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.6
 # TODO: patch is here...
 # p384 = { git = "https://github.com/preston4896/RustCrypto-elliptic-curves", branch = "risczero" }
 p384 = { path = "/Users/tzerrell/code/external/RustCrypto-elliptic-curves/p384" }
+primeorder = { path = "/Users/tzerrell/code/external/RustCrypto-elliptic-curves/primeorder" }
 crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.2-risczero.0" }
 
 [profile.release]
