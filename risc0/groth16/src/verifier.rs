@@ -184,6 +184,7 @@ impl Verifier {
     }
 }
 
+// TODO: Should now be unused (so can be deleted); leaving around to inspire future implementations
 /// Verifying key for Groth16 proofs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Fr(#[serde(with = "serde_ark")] pub(crate) ark_bn254::Fr);

@@ -74,3 +74,9 @@ opt-level = 3
 
 [profile.release]
 lto = true
+
+
+
+[patch.crates-io]
+# TODO: something more permanent
+substrate-bn = { path = "/Users/tzerrell/code/substrate_bn/bn" }

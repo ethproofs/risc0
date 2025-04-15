@@ -5608,6 +5608,16 @@ checksum = "3df6368f71f205ff9c33c076d170dd56ebf68e8161c733c0caa07a7a5509ed53"
 
 [[package]]
 name = "risc0-bigint2"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "936616ad8d3bd4d54b0c2f2f621652dc5ec630e3fc3dba32bcfcb1475c6af4f7"
+dependencies = [
+ "include_bytes_aligned",
+ "stability",
+]
+
+[[package]]
+name = "risc0-bigint2"
 version = "1.4.2"
 dependencies = [
  "anyhow",
@@ -6704,14 +6714,16 @@ dependencies = [
 [[package]]
 name = "substrate-bn"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b5bbfa79abbae15dd642ea8176a21a635ff3c00059961d1ea27ad04e5b441c"
 dependencies = [
+ "bytemuck",
  "byteorder",
  "crunchy",
+ "crypto-bigint",
  "lazy_static",
  "rand",
+ "risc0-bigint2 1.4.1",
  "rustc-hex",
+ "serde",
 ]
 
 [[package]]

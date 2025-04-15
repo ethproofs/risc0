@@ -241,10 +241,20 @@ pub struct Vk {
     pub(crate) gamma_abc_g1: Vec<substrate_bn::G1>,
 }
 
+// TODO: Hopefully unnecessary...:
+// impl Serialize for Vk {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: Serializer,
+//     {
+//         serializer.serialize
+//     }
+// }
+
 /// A prepared groth16 verification key (TODO)
 /// 
 /// TODO: Note that status quo this doesn't contain the original verification key and so can't be regenerated
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Pvk {
     // TODO: better pattern for access?
     pub(crate) vk: Vk,
