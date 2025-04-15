@@ -8237,6 +8237,8 @@ dependencies = [
  "risc0-zkvm",
  "risc0-zkvm-methods",
  "semver",
+ "serde",
+ "serde_with",
  "tempfile",
  "toml",
  "toml_edit",
