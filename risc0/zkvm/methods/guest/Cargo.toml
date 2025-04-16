@@ -36,3 +36,7 @@ debug = 1
 
 [package.metadata.release]
 release = false
+
+[patch.crates-io]
+# TODO: something more permanent
+substrate-bn = { path = "/Users/tzerrell/code/substrate_bn/bn" }

@@ -6,5 +6,10 @@ edition = "2021"
 [workspace]
 
 [dependencies]
+substrate_bn = { version = "0.6.0", features = [ "serde" ]}
 risc0-groth16 = { path = "../../../../risc0/groth16", default-features = false, features = ["std"] }
 risc0-zkvm = { path = "../../../../risc0/zkvm", default-features = false, features = ["std"] }
+
+[patch.crates-io]
+# TODO: something more permanent
+substrate-bn = { path = "/Users/tzerrell/code/substrate_bn/bn" }

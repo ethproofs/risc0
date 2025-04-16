@@ -14,3 +14,7 @@ risc0-zkvm = { path = "../../../../zkvm", default-features = false, features = [
 risc0-zkvm-platform = { path = "../../../../zkvm/platform", default-features = false, features = [
   "unstable",
 ] }
+
+[patch.crates-io]
+# TODO: something more permanent
+substrate-bn = { path = "/Users/tzerrell/code/substrate_bn/bn" }
