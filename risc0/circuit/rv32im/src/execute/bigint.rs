@@ -165,6 +165,49 @@ pub(crate) fn ecall(ctx: &mut dyn Risc0Context) -> Result<BigIntExec> {
         nondet_program_ptr.baddr(),
         nondet_program_size as usize * WORD_SIZE,
     )?;
+    let sig: [u8; 4] = [
+        program_bytes[12], program_bytes[16],
+        program_bytes[20], program_bytes[24],
+    ];
+    let _blob_name = match sig {
+        [0x03, 0x00, 0x09, 0x30] => "modinv_384",
+        [0x03, 0x00, 0x20, 0x20] => "modadd_256",
+        [0x08, 0x00, 0x15, 0x30] => "extfield_xxone_mul_384",
+        [0x04, 0x00, 0x11, 0x20] => "extfield_deg2_sub_256",
+        [0x03, 0x00, 0x0F, 0x20] => "extfield_deg2_add_256 / extfieldadd_256",
+        [0x02, 0x00, 0x0F, 0x20] => "extfieldsub_256",
+        [0x03, 0x00, 0x09, 0x20] => "modinv_256",
+        [0x03, 0x00, 0x08, 0x00] => "modmul_4096",
+        [0x03, 0x00, 0x08, 0x30] => "modadd_384 / modmul_384",
+        [0x03, 0x00, 0x0F, 0x30] => "extfield_deg2_add_384",
+        //[0x03, 0x00, 0x0F, 0x20] => extfieldadd_256
+        [0x06, 0x00, 0xd2, 0x20] => "extfield_deg4_mul_256",
+        [0x06, 0x00, 0x2c, 0x20] => "extfieldmul_256 / extfield_deg2_mul_256",
+        [0x04, 0x00, 0x11, 0x30] => "extfield_deg2_sub_384",
+        [0x04, 0x00, 0x09, 0x30] => "modsub_384",
+        //[0x03, 0x00, 0x08, 0x30] => modmul_384
+        [0x04, 0x00, 0x09, 0x20] => "modsub_256",
+        [0x08, 0x00, 0x15, 0x20] => "extfield_xxone_mul_256",
+        [0x03, 0x00, 0x08, 0x20] => "modmul_256",
+        //[0x06, 0x00, 0x2c, 0x20] => "extfield_deg2_mul_256",
+        [0x17, 0x01, 0x2b, 0x01] => "ec_double_384",
+        [0x14, 0x00, 0x2b, 0x20] => "ec_add_256",
+        [0x18, 0x01, 0x2b, 0x01] => "ec_double_256",
+        [0x13, 0x00, 0x2b, 0x30] => "ec_add_384",
+        _ => "<unknown blob>"
+    };
+    //println!("ecall_bigint: {blob_name}");
+    //println!("signature {:02x} {:02x} {:02x} {:02x} - {:02x} {:02x}",
+    //    program_bytes[8], program_bytes[12], program_bytes[16],
+    //    program_bytes[20], program_bytes[24], program_bytes[25]);
+    //for base in (0..program_bytes.len()).step_by(16) {
+    //    let limit = std::cmp::min(base + 16, program_bytes.len());
+    //    for offset in base..limit {
+    //        print!("{:02X} ", program_bytes[offset]);
+    //    }
+    //    println!("");
+    //}
+    //println!("program_bytes: {:X?}", program_bytes);
     tracing::debug!("program_bytes: {}", program_bytes.len());
     let mut cursor = Cursor::new(program_bytes);
     let program = bibc::Program::decode(&mut cursor)?;
