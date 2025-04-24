@@ -1,0 +1,13 @@
+[package]
+name = "multi-gpu-methods"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risc0-zkvm = { path = "../../../risc0/zkvm" }
+
+[build-dependencies]
+risc0-build = { path = "../../../risc0/build" }
+
+[package.metadata.risc0]
+methods = ["guest"]

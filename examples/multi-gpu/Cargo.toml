@@ -1,0 +1,15 @@
+[package]
+name = "multi-gpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+risc0-zkvm = { path = "../../risc0/zkvm", features = ["prove"] }
+multi-gpu-methods = { path = "methods" }
+tokio = { version = "1.28", features = ["full"] }
+
+[features]
+cuda = ["risc0-zkvm/cuda"]
+default = []
+metal = ["risc0-zkvm/metal"]
