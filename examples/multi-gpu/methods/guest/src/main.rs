@@ -1,3 +1,4 @@
+#![no_std]
 #![no_main]
 
 use risc0_zkvm::guest::env;
@@ -14,7 +15,8 @@ fn main() {
 
         // Periodically add a pause point to create new segments
         if i % 100 == 0 {
-            env::log(&format!("Counter: {}", counter));
+            // Use a static string instead of format! which may rely on alloc
+            env::log("Adding pause point");
             env::pause();
         }
     }

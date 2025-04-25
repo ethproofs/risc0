@@ -21,7 +21,7 @@ members = [
   "json/core",
   "jwt-validator",
   "jwt-validator/core",
-  "keccak",
+  "keccak", "multi-gpu",
   "password-checker",
   "password-checker/core",
   "profiling",
