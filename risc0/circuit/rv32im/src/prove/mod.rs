@@ -34,7 +34,12 @@ pub trait SegmentProver {
 pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
     cfg_if! {
         if #[cfg(feature = "cuda")] {
-            self::hal::cuda::segment_prover()
+            // Check for optimized CUDA environment variable
+            if std::env::var("RISC0_CUDA_OPTIMIZED").is_ok() {
+                self::hal::cuda_optimized::optimized_segment_prover()
+            } else {
+                self::hal::cuda::segment_prover()
+            }
         // } else if #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios"))] {
         // self::hal::metal::segment_prover(hashfn)
         } else {
