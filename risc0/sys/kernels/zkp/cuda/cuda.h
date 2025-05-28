@@ -74,6 +74,42 @@ inline LaunchConfig getSimpleConfig(uint32_t count) {
   return LaunchConfig{grid, block, 0};
 }
 
+inline LaunchConfig getOptimizedConfig(uint32_t count, const char* kernel_name = nullptr) {
+  int device;
+  CUDA_OK(cudaGetDevice(&device));
+
+  cudaDeviceProp props;
+  CUDA_OK(cudaGetDeviceProperties(&props, device));
+
+  // Calculate optimal block size based on occupancy
+  int block_size = 256; // Default
+
+  // Kernel-specific optimizations
+  if (kernel_name) {
+    if (strstr(kernel_name, "ntt") || strstr(kernel_name, "fft")) {
+      block_size = 512; // Compute-intensive
+    } else if (strstr(kernel_name, "hash") || strstr(kernel_name, "mem")) {
+      block_size = 128; // Memory-bound
+    } else if (strstr(kernel_name, "accum")) {
+      block_size = 256; // Balanced
+    } else if (strstr(kernel_name, "witgen")) {
+      block_size = 384; // Witness generation optimized
+    }
+  }
+
+  // Ensure block size doesn't exceed device limits
+  block_size = std::min(block_size, props.maxThreadsPerBlock);
+
+  // Calculate grid size with better occupancy
+  int grid = (count + block_size - 1) / block_size;
+
+  // Limit grid size to multiprocessor count * 2 for better scheduling
+  int max_grid = props.multiProcessorCount * 2;
+  grid = std::min(grid, max_grid);
+
+  return LaunchConfig{grid, block_size, 0};
+}
+
 template <typename... ExpTypes, typename... ActTypes>
 const char* launchKernel(void (*kernel)(ExpTypes...),
                          uint32_t count,
@@ -81,7 +117,7 @@ const char* launchKernel(void (*kernel)(ExpTypes...),
                          ActTypes&&... args) {
   try {
     CudaStream stream;
-    LaunchConfig cfg = getSimpleConfig(count);
+    LaunchConfig cfg = getOptimizedConfig(count, "generic");
     cudaLaunchConfig_t config;
     config.attrs = nullptr;
     config.numAttrs = 0;

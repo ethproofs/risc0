@@ -439,10 +439,10 @@ const char* risc0_circuit_rv32im_cuda_witgen(uint32_t mode,
 
     switch (mode) {
     case kStepModeParallel: {
-      auto cfg1 = getSimpleConfig(split);
+      auto cfg1 = getOptimizedConfig(split, "witgen_phase1");
       size_t phase2Count = lastCycle - split;
       // printf("phase1: %zu, phase2: %zu\n", split, phase2Count);
-      auto cfg2 = getSimpleConfig(phase2Count);
+      auto cfg2 = getOptimizedConfig(phase2Count, "witgen_phase2");
       {
         nvtx3::scoped_range range("phase1");
         par_stepExec<<<cfg1.grid, cfg1.block, 0, stream>>>(ctx.ctx, 0, split);
@@ -477,7 +477,7 @@ const char* risc0_circuit_rv32im_cuda_accum(AccumBuffers* buffers,
   try {
     HostAccumContext ctx(buffers, preflight, lastCycle);
     CudaStream stream;
-    auto cfg = getSimpleConfig(lastCycle);
+    auto cfg = getOptimizedConfig(lastCycle, "accum");
 
     {
       nvtx3::scoped_range range("phase1");
@@ -499,7 +499,8 @@ const char* risc0_circuit_rv32im_cuda_accum(AccumBuffers* buffers,
 
     {
       nvtx3::scoped_range range("phase3");
-      finalizeAccum<<<cfg.grid, cfg.block, 0, stream>>>(ctx.ctx, lastCycle);
+      auto finalize_cfg = getOptimizedConfig(lastCycle, "accum_finalize");
+      finalizeAccum<<<finalize_cfg.grid, finalize_cfg.block, 0, stream>>>(ctx.ctx, lastCycle);
       CUDA_OK(cudaStreamSynchronize(stream));
     }
 

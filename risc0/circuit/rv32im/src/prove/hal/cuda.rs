@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use std::rc::Rc;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use anyhow::Result;
 use risc0_circuit_rv32im_sys::{
@@ -49,11 +51,36 @@ use super::{
 
 pub struct CudaCircuitHal<CH: CudaHash> {
     _hal: Rc<CudaHal<CH>>, // retain a reference to ensure the context remains valid
+    buffer_pool: Mutex<HashMap<usize, Vec<CudaBuffer<Val>>>>,
 }
 
 impl<CH: CudaHash> CudaCircuitHal<CH> {
     pub fn new(_hal: Rc<CudaHal<CH>>) -> Self {
-        Self { _hal }
+        Self {
+            _hal,
+            buffer_pool: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_pooled_buffer(&self, size: usize) -> Option<CudaBuffer<Val>> {
+        let mut pool = self.buffer_pool.lock().unwrap();
+        pool.get_mut(&size)?.pop()
+    }
+
+    fn return_pooled_buffer(&self, buffer: CudaBuffer<Val>) {
+        let size = buffer.size();
+        let mut pool = self.buffer_pool.lock().unwrap();
+        pool.entry(size).or_insert_with(Vec::new).push(buffer);
+    }
+
+    fn get_or_alloc_buffer(&self, name: &str, size: usize) -> CudaBuffer<Val> {
+        if let Some(buffer) = self.get_pooled_buffer(size) {
+            tracing::debug!("Reusing pooled buffer for {}: {} elements", name, size);
+            buffer
+        } else {
+            tracing::debug!("Allocating new buffer for {}: {} elements", name, size);
+            self._hal.alloc_elem_init(name, size, Val::INVALID)
+        }
     }
 }
 
