@@ -89,6 +89,9 @@ pub(crate) struct Preflight<'a> {
 impl Segment {
     pub(crate) fn preflight(&self, rand_z: ExtVal) -> Result<PreflightTrace> {
         scope!("preflight");
+
+        // Only log in debug builds to reduce overhead
+        #[cfg(debug_assertions)]
         tracing::debug!("preflight: {self:#?}");
 
         let mut preflight = Preflight::new(self, rand_z);
@@ -99,6 +102,7 @@ impl Segment {
         preflight.wrap_memory_txns()?;
         preflight.update_p2_zcheck()?;
 
+        #[cfg(debug_assertions)]
         tracing::trace!("paging_cycles: {}", preflight.pager.cycles);
 
         Ok(preflight.trace)
@@ -111,8 +115,14 @@ fn get_digest_addr(idx: u32) -> WordAddr {
 
 impl<'a> Preflight<'a> {
     fn new(segment: &'a Segment, rand_z: ExtVal) -> Self {
+        #[cfg(debug_assertions)]
         tracing::debug!("po2: {}", segment.po2);
+
         let total_cycles = 1 << segment.po2;
+
+        // Pre-allocate with estimated sizes to reduce reallocations
+        let estimated_txns = total_cycles / 4; // Rough estimate: 1 txn per 4 cycles
+        let estimated_bigint_bytes = total_cycles / 16; // Rough estimate
 
         let mut page_memory = PagedMap::default();
         for (&node_idx, digest) in segment.partial_image.digests() {
@@ -125,6 +135,8 @@ impl<'a> Preflight<'a> {
             trace: PreflightTrace {
                 cycles: Vec::with_capacity(total_cycles),
                 backs: Vec::with_capacity(total_cycles),
+                txns: Vec::with_capacity(estimated_txns),
+                bigint_bytes: Vec::with_capacity(estimated_bigint_bytes),
                 rand_z,
                 ..Default::default()
             },
@@ -208,8 +220,14 @@ impl<'a> Preflight<'a> {
 
     // Now, go back and update memory transactions to wrap around
     fn wrap_memory_txns(&mut self) -> Result<()> {
+        // Pre-allocate to avoid bounds checking in the loop
+        let cycles_len = self.trace.cycles.len();
+
         for txn in self.trace.txns.iter_mut() {
-            // tracing::trace!("{txn:?}");
+            // Remove tracing from hot path
+            #[cfg(debug_assertions)]
+            tracing::trace!("{txn:?}");
+
             let addr = WordAddr(txn.addr);
             if txn.prev_cycle == u32::MAX {
                 // If first cycle for a particular address, set 'prev_cycle' to final cycle
@@ -218,7 +236,10 @@ impl<'a> Preflight<'a> {
                 // Otherwise, compute cycle diff and another diff
                 ensure!(txn.cycle != txn.prev_cycle);
                 let diff = txn.cycle - 1 - txn.prev_cycle;
-                self.trace.cycles[(diff / 2) as usize].diff_count[(diff % 2) as usize] += 1;
+                let cycle_idx = (diff / 2) as usize;
+                if cycle_idx < cycles_len {
+                    self.trace.cycles[cycle_idx].diff_count[(diff % 2) as usize] += 1;
+                }
             }
 
             // If last cycle, set final value to original value
@@ -262,6 +283,16 @@ impl<'a> Preflight<'a> {
 
     fn fini(&mut self) -> Result<()> {
         let start_cycles = self.trace.cycles.len();
+
+        // Batch allocate cycles to reduce individual allocations
+        let control_table_cycles: usize = (256 - 16) / 16 + (64 * 1024) / 16;
+        let last_cycle = 1usize << self.segment.po2;
+        let current_len = self.trace.cycles.len();
+        let remaining_cycles = last_cycle.saturating_sub(current_len + control_table_cycles + 2);
+
+        // Reserve capacity for all remaining cycles
+        self.trace.cycles.reserve(control_table_cycles + remaining_cycles + 2);
+        self.trace.backs.reserve(control_table_cycles + remaining_cycles + 2);
 
         for i in (16..256).step_by(16) {
             self.add_cycle_special(
@@ -310,7 +341,7 @@ impl<'a> Preflight<'a> {
         );
         assert_eq!(self.trace.cycles.len() - start_cycles, RESERVED_CYCLES);
 
-        let last_cycle = 1 << self.segment.po2;
+        // Batch add remaining cycles
         for _ in self.trace.cycles.len()..last_cycle {
             self.add_cycle_special(
                 CycleState::ControlDone,
@@ -375,7 +406,11 @@ impl<'a> Preflight<'a> {
             bigint_idx: self.bigint_idx,
             diff_count: [0, 0],
         };
-        // tracing::trace!("[{}]: {cycle:?}", self.trace.cycles.len());
+
+        // Remove tracing from hot path - only enable in debug builds
+        #[cfg(debug_assertions)]
+        tracing::trace!("[{}]: {cycle:?}", self.trace.cycles.len());
+
         self.trace.cycles.push(cycle);
         self.trace.backs.push(back);
         self.txn_idx = self.trace.txns.len() as u32;
@@ -437,7 +472,11 @@ impl<'a> Preflight<'a> {
         let raw_cur_state = cur_state as u32;
         let major = (7 + raw_cur_state / 8) as u8;
         let minor = (raw_cur_state % 8) as u8;
-        // tracing::trace!("add_cycle_special(cur_state: {cur_state:?}, next_state: {next_state:?}, major: {major}, minor: {minor})");
+
+        // Remove tracing from hot path
+        #[cfg(debug_assertions)]
+        tracing::trace!("add_cycle_special(cur_state: {cur_state:?}, next_state: {next_state:?}, major: {major}, minor: {minor})");
+
         self.add_cycle(next_state, pc, major, minor, paging_idx, back);
     }
 
@@ -520,6 +559,8 @@ impl Risc0Context for Preflight<'_> {
         kind: InsnKind,
         decoded: &crate::execute::rv32im::DecodedInstruction,
     ) -> Result<()> {
+        // Only trace in debug builds to reduce overhead
+        #[cfg(debug_assertions)]
         tracing::trace!(
             "[{}]: {:?}> {}",
             self.trace.cycles.len(),
@@ -547,7 +588,10 @@ impl Risc0Context for Preflight<'_> {
             return self.pager.peek(addr);
         }
 
-        // tracing::trace!("load_u32: {addr:?}");
+        // Remove tracing from hot path
+        #[cfg(debug_assertions)]
+        tracing::trace!("load_u32: {addr:?}");
+
         let cycle = (2 * self.trace.cycles.len()) as u32;
         let word = if addr >= MERKLE_TREE_START_ADDR {
             self.page_memory
@@ -566,7 +610,11 @@ impl Risc0Context for Preflight<'_> {
                 prev_cycle,
                 prev_word: word,
             };
-            // tracing::trace!("txn: {txn:?}");
+
+            // Remove tracing from hot path
+            #[cfg(debug_assertions)]
+            tracing::trace!("txn: {txn:?}");
+
             self.trace.txns.push(txn);
         }
         Ok(word)
@@ -592,7 +640,11 @@ impl Risc0Context for Preflight<'_> {
             prev_cycle,
             prev_word,
         };
-        // tracing::trace!("txn: {txn:?}");
+
+        // Remove tracing from hot path
+        #[cfg(debug_assertions)]
+        tracing::trace!("txn: {txn:?}");
+
         self.trace.txns.push(txn);
         Ok(())
     }
