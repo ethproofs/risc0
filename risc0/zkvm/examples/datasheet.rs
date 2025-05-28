@@ -16,17 +16,18 @@
 //!
 //! This example benchmarks the zkVM performance on the current machine.
 //!
-//! ## Usage with Optimized CUDA
+//! ## CUDA Performance
 //!
-//! To use the optimized CUDA HAL with memory pooling and kernel optimization:
+//! When built with CUDA support, this example uses an optimized CUDA HAL by default
+//! that includes memory pooling and kernel optimization for improved performance.
 //!
 //! ```bash
-//! # Method 1: Environment variable
-//! export RISC0_CUDA_OPTIMIZED=1
+//! # Use optimized CUDA (default)
 //! cargo run --release --example datasheet --features cuda
 //!
-//! # Method 2: Command line flag
-//! cargo run --release --example datasheet --features cuda -- --optimized-cuda
+//! # Use legacy CUDA implementation
+//! export RISC0_CUDA_LEGACY=1
+//! cargo run --release --example datasheet --features cuda
 //! ```
 //!
 //! Expected performance improvements with optimized CUDA:
@@ -130,11 +131,6 @@ struct Args {
     /// Select max size for composite runs
     #[arg(long, default_value_t = 20, value_parser = po2_in_range)]
     max_po2: usize,
-
-    /// Enable optimized CUDA HAL with memory pooling and kernel optimization
-    #[cfg(feature = "cuda")]
-    #[arg(long)]
-    optimized_cuda: bool,
 }
 
 fn po2_in_range(s: &str) -> Result<usize, String> {
@@ -261,12 +257,6 @@ impl Datasheet {
     fn composite(&mut self, args: &Args) {
         let hashfn = "poseidon2";
 
-        // Set optimized CUDA environment variable if requested
-        #[cfg(feature = "cuda")]
-        if args.optimized_cuda {
-            std::env::set_var("RISC0_CUDA_OPTIMIZED", "1");
-        }
-
         let opts = ProverOpts::all_po2s().with_hashfn(hashfn.to_string());
         let prover = get_prover_server(&opts).unwrap();
 
@@ -308,12 +298,6 @@ impl Datasheet {
 
     fn lift(&mut self) {
         println!("lift");
-
-        // Set optimized CUDA environment variable if available
-        #[cfg(feature = "cuda")]
-        if std::env::var("RISC0_CUDA_OPTIMIZED").is_ok() {
-            // Keep the setting from composite
-        }
 
         let opts = ProverOpts::all_po2s();
         let ctx = VerifierContext::default();

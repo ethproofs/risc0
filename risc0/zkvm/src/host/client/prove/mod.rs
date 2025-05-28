@@ -169,10 +169,6 @@ pub struct ProverOpts {
 
     /// Maximum cycle count, as a power of two (po2) that these prover options support.
     pub(crate) max_segment_po2: usize,
-
-    /// Enable optimized CUDA HAL with memory pooling and kernel optimization.
-    #[cfg(feature = "cuda")]
-    pub use_optimized_cuda: bool,
 }
 
 /// An enumeration of receipt kinds that can be requested to be generated.
@@ -210,8 +206,6 @@ impl Default for ProverOpts {
             receipt_kind: ReceiptKind::Composite,
             control_ids: ALLOWED_CONTROL_IDS.to_vec(),
             max_segment_po2: DEFAULT_MAX_PO2,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 }
@@ -233,8 +227,6 @@ impl ProverOpts {
                 .unwrap()
                 .collect(),
             max_segment_po2: po2_max,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 
@@ -254,8 +246,6 @@ impl ProverOpts {
             receipt_kind: ReceiptKind::Composite,
             control_ids: Vec::new(),
             max_segment_po2: DEFAULT_MAX_PO2,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 
@@ -268,8 +258,6 @@ impl ProverOpts {
             receipt_kind: ReceiptKind::Composite,
             control_ids: ALLOWED_CONTROL_IDS.to_vec(),
             max_segment_po2: DEFAULT_MAX_PO2,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 
@@ -282,8 +270,6 @@ impl ProverOpts {
             receipt_kind: ReceiptKind::Succinct,
             control_ids: ALLOWED_CONTROL_IDS.to_vec(),
             max_segment_po2: DEFAULT_MAX_PO2,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 
@@ -298,8 +284,6 @@ impl ProverOpts {
             receipt_kind: ReceiptKind::Groth16,
             control_ids: ALLOWED_CONTROL_IDS.to_vec(),
             max_segment_po2: DEFAULT_MAX_PO2,
-            #[cfg(feature = "cuda")]
-            use_optimized_cuda: false,
         }
     }
 
@@ -344,14 +328,7 @@ impl ProverOpts {
         }
     }
 
-    /// Return [ProverOpts] with optimized CUDA HAL enabled.
-    #[cfg(feature = "cuda")]
-    pub fn with_optimized_cuda(self, use_optimized_cuda: bool) -> Self {
-        Self {
-            use_optimized_cuda,
-            ..self
-        }
-    }
+
 
     #[cfg(feature = "prove")]
     pub(crate) fn hash_suite(
