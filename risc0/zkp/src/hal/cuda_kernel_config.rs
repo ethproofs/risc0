@@ -47,12 +47,12 @@ impl KernelOptimizer {
 
         let device_props = DeviceProperties {
             max_threads_per_block: device.get_attribute(DeviceAttribute::MaxThreadsPerBlock)? as u32,
-            max_threads_per_sm: device.get_attribute(DeviceAttribute::MaxThreadsPerMultiProcessor)? as u32,
-            max_blocks_per_sm: device.get_attribute(DeviceAttribute::MaxBlocksPerMultiProcessor)? as u32,
+            max_threads_per_sm: device.get_attribute(DeviceAttribute::MaxThreadsPerMultiprocessor)? as u32,
+            max_blocks_per_sm: device.get_attribute(DeviceAttribute::MaxBlocksPerMultiprocessor)? as u32,
             shared_mem_per_block: device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as usize,
-            shared_mem_per_sm: device.get_attribute(DeviceAttribute::MaxSharedMemoryPerMultiProcessor)? as usize,
+            shared_mem_per_sm: device.get_attribute(DeviceAttribute::MaxSharedMemoryPerMultiprocessor)? as usize,
             warp_size: device.get_attribute(DeviceAttribute::WarpSize)? as u32,
-            sm_count: device.get_attribute(DeviceAttribute::MultiProcessorCount)? as u32,
+            sm_count: device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32,
         };
 
         Ok(Self {
