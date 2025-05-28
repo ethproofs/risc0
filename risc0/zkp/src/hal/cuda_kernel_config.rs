@@ -45,13 +45,22 @@ impl KernelOptimizer {
     pub fn new() -> Result<Self, cust::error::CudaError> {
         let device = Device::get_device(0)?;
 
+        let max_threads_per_block = device.get_attribute(DeviceAttribute::MaxThreadsPerBlock)? as u32;
+        let max_threads_per_sm = device.get_attribute(DeviceAttribute::MaxThreadsPerMultiprocessor)? as u32;
+        let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+
+        // Calculate max blocks per SM based on available attributes
+        // This is typically limited by the maximum number of resident blocks per SM
+        // For most modern GPUs, this is around 16-32 blocks per SM
+        let max_blocks_per_sm = (max_threads_per_sm / warp_size).min(32);
+
         let device_props = DeviceProperties {
-            max_threads_per_block: device.get_attribute(DeviceAttribute::MaxThreadsPerBlock)? as u32,
-            max_threads_per_sm: device.get_attribute(DeviceAttribute::MaxThreadsPerMultiprocessor)? as u32,
-            max_blocks_per_sm: device.get_attribute(DeviceAttribute::MaxBlocksPerMultiprocessor)? as u32,
+            max_threads_per_block,
+            max_threads_per_sm,
+            max_blocks_per_sm,
             shared_mem_per_block: device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as usize,
             shared_mem_per_sm: device.get_attribute(DeviceAttribute::MaxSharedMemoryPerMultiprocessor)? as usize,
-            warp_size: device.get_attribute(DeviceAttribute::WarpSize)? as u32,
+            warp_size,
             sm_count: device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32,
         };
 
