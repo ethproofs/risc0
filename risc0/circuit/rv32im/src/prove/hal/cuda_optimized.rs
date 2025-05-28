@@ -15,7 +15,7 @@
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 use anyhow::Result;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use risc0_circuit_rv32im_sys::{
     risc0_circuit_rv32im_cuda_accum, risc0_circuit_rv32im_cuda_eval_check,
     risc0_circuit_rv32im_cuda_witgen, RawAccumBuffers, RawBuffer, RawExecBuffers,
@@ -30,7 +30,7 @@ use risc0_zkp::{
     core::log2_ceil,
     hal::{
         cuda::{BufferImpl as CudaBuffer, CudaHal, CudaHalPoseidon2, CudaHash, CudaHashPoseidon2},
-        AccumPreflight, Buffer, CircuitHal,
+        AccumPreflight, Buffer, CircuitHal, Hal,
     },
     INV_RATE,
 };
@@ -185,12 +185,13 @@ impl<CH: CudaHash> OptimizedCudaCircuitHal<CH> {
 
     /// Optimized buffer creation with pooling
     fn create_optimized_buffer<T>(&self, size: usize) -> CudaBuffer<T> {
-        let byte_size = size * std::mem::size_of::<T>();
-        let raw_buffer = self.memory_pool.get_buffer(byte_size);
+        let _byte_size = size * std::mem::size_of::<T>();
+        // TODO: Implement actual memory pooling
+        // let raw_buffer = self.memory_pool.get_buffer(byte_size);
 
-        // TODO: Convert raw buffer to typed buffer
         // For now, use the existing HAL allocation
-        self.hal.alloc_elem("optimized", size)
+        // Note: This is a placeholder - actual implementation would use memory pooling
+        todo!("Implement optimized buffer creation with memory pooling")
     }
 }
 
@@ -207,8 +208,8 @@ impl<CH: CudaHash> CircuitWitnessGenerator<CudaHal<CH>> for OptimizedCudaCircuit
         let cycles = preflight.cycles.len();
         assert_eq!(cycles, data.rows);
 
-        // Only log in release builds if profiling is enabled
-        #[cfg(any(debug_assertions, feature = "profiling"))]
+        // Only log in debug builds
+        #[cfg(debug_assertions)]
         tracing::debug!("witgen: {cycles}");
 
         // Pre-allocate any temporary buffers we might need
@@ -263,7 +264,7 @@ impl<CH: CudaHash> CircuitAccumulator<CudaHal<CH>> for OptimizedCudaCircuitHal<C
 
         let cycles = preflight.cycles.len();
 
-        #[cfg(any(debug_assertions, feature = "profiling"))]
+        #[cfg(debug_assertions)]
         tracing::debug!("accumulate: {cycles}");
 
         let buffers = RawAccumBuffers {
@@ -341,7 +342,7 @@ impl<CH: CudaHash> CircuitHal<CudaHal<CH>> for OptimizedCudaCircuitHal<CH> {
         let mix = globals[GLOBAL_MIX];
         let out = globals[GLOBAL_OUT];
 
-        #[cfg(any(debug_assertions, feature = "profiling"))]
+        #[cfg(debug_assertions)]
         tracing::debug!(
             "check: {}, ctrl: {}, data: {}, accum: {}, mix: {} out: {}",
             check.size(),
@@ -357,7 +358,7 @@ impl<CH: CudaHash> CircuitHal<CudaHal<CH>> for OptimizedCudaCircuitHal<CH> {
         let domain = steps * INV_RATE;
         let rou = Val::ROU_FWD[po2 + EXP_PO2];
 
-        #[cfg(any(debug_assertions, feature = "profiling"))]
+        #[cfg(debug_assertions)]
         tracing::debug!("steps: {steps}, domain: {domain}, po2: {po2}, rou: {rou:?}");
 
         // Pre-compute polynomial mix powers
