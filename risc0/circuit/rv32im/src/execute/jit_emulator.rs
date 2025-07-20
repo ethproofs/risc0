@@ -27,12 +27,8 @@ pub struct JitEmulator {
 impl JitEmulator {
     pub fn new() -> Result<Self> {
         // Check environment variable to completely disable JIT
-        let mut jit_enabled = std::env::var("RISC0_DISABLE_JIT").is_err();
         // On macOS, executable mmap is restricted under sandbox, so disable JIT
-        #[cfg(target_os = "macos")]
-        {
-            jit_enabled = false;
-        }
+        let jit_enabled = std::env::var("RISC0_DISABLE_JIT").is_err() && !cfg!(target_os = "macos");
 
         Ok(Self {
             interpreter: Emulator::new(),
