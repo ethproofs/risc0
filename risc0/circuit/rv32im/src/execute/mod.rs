@@ -16,11 +16,16 @@ pub(crate) mod bibc;
 pub(crate) mod bigint;
 mod executor;
 pub mod gdb;
+#[cfg(feature = "std")]
+pub(crate) mod jit;
+#[cfg(feature = "std")]
+pub mod jit_emulator;
+#[cfg(feature = "std")]
 pub(crate) mod pager;
 pub mod platform;
 pub(crate) mod poseidon2;
 pub(crate) mod r0vm;
-pub(crate) mod rv32im;
+pub mod rv32im;
 pub(crate) mod segment;
 pub(crate) mod sha2;
 mod syscall;

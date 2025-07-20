@@ -52,6 +52,12 @@ risc0-circuit-rv32im-sys = { workspace = true, optional = true }
 risc0-sys = { workspace = true, optional = true }
 smallvec = { version = "1.13", optional = true }
 wide = { version = "0.7", optional = true }
+# JIT dependencies - only available on host
+cranelift = { version = "0.105", optional = true }
+cranelift-jit = { version = "0.105", optional = true }
+cranelift-module = { version = "0.105", optional = true }
+cranelift-codegen = { version = "0.105", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -67,14 +73,19 @@ cuda = [
   "risc0-sys/cuda",
   "risc0-zkp/cuda",
 ]
-default = []
+default = ["execute"]
 # entropy_finder = []
 execute = [
   "anyhow/backtrace",
   "dep:byteorder",
+  "dep:cranelift",
+  "dep:cranelift-jit",
+  "dep:cranelift-module",
+  "dep:cranelift-codegen",
   "dep:enum-map",
   "dep:gdbstub",
   "dep:gdbstub_arch",
+  "dep:libc",
   "dep:malachite",
   "dep:num-derive",
   "dep:num-traits",

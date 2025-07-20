@@ -41,12 +41,17 @@ use super::{
     platform::*,
     poseidon2::Poseidon2State,
     r0vm::{EcallKind, LoadOp, Risc0Context, Risc0Machine},
-    rv32im::{DecodedInstruction, Emulator, InsnKind},
+    rv32im::{DecodedInstruction, InsnKind},
     segment::Segment,
     sha2::Sha2State,
     syscall::Syscall,
     unlikely, SyscallContext,
 };
+
+#[cfg(feature = "std")]
+use super::jit_emulator::JitEmulator;
+#[cfg(not(feature = "std"))]
+use super::rv32im::Emulator;
 
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -222,7 +227,11 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
 
         self.reset();
 
+        #[cfg(feature = "std")]
+        let mut emu = JitEmulator::new()?;
+        #[cfg(not(feature = "std"))]
         let mut emu = Emulator::new();
+
         Risc0Machine::resume(self)?;
 
         let (commit_sender, commit_recv) = sync_channel(MAX_OUTSTANDING_SEGMENTS - 1);

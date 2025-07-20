@@ -24,7 +24,7 @@ use enum_iterator::Sequence;
 use risc0_bigint2_methods::ECDSA_ELF as BIGINT2_ELF;
 use risc0_binfmt::ProgramBinary;
 use risc0_circuit_rv32im::{
-    execute::{DEFAULT_SEGMENT_LIMIT_PO2, RESERVED_CYCLES},
+    execute::{RESERVED_CYCLES},
     MAX_INSN_CYCLES,
 };
 use risc0_zkos_v1compat::V1COMPAT_ELF;
@@ -196,8 +196,14 @@ impl Datasheet {
     }
 
     fn execute(&mut self) {
+        // For JIT benchmarking, use 10 billion iterations (~10B cycles)
+        // This will stress-test the JIT compilation and show amortization benefits
+        let iterations = 10_000_000_000_u64; // 10 billion iterations
+        println!("Running execute with {} iterations (~{}B cycles for JIT benchmarking)",
+                iterations, iterations / 1_000_000_000);
+
         let env = ExecutorEnv::builder()
-            .write_slice(&ITERATIONS_FULL_PO2_20_SEGMENT.to_le_bytes())
+            .write_slice(&iterations.to_le_bytes())
             .build()
             .unwrap();
 
@@ -205,19 +211,19 @@ impl Datasheet {
         let session = execute_elf(env, &LOOP_ELF).unwrap();
         let duration = start.elapsed();
 
-        // We want to ensure that we're using a full single segment for this benchmark.
-        assert_eq!(
-            session.segments.len(),
-            1,
-            "{} didn't fit in po2={DEFAULT_SEGMENT_LIMIT_PO2}",
-            session.total_cycles
-        );
-        assert!(
-            session.reserved_cycles as usize <= RESERVED_CYCLES_MAX,
-            "more room in the segment ({} <= {})",
-            session.reserved_cycles,
-            RESERVED_CYCLES_MAX
-        );
+        // With 10B cycles, we'll have many segments - that's expected for JIT benchmarking
+        println!("Execution completed: {} total cycles across {} segments",
+                session.total_cycles, session.segments.len());
+
+        // For JIT benchmarking, we want to see how performance scales with many segments
+        if session.segments.len() == 1 {
+            assert!(
+                session.reserved_cycles as usize <= RESERVED_CYCLES_MAX,
+                "more room in the segment ({} <= {})",
+                session.reserved_cycles,
+                RESERVED_CYCLES_MAX
+            );
+        }
 
         let throughput = (session.user_cycles as f64) / duration.as_secs_f64();
         self.results.push(PerformanceData {

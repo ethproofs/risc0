@@ -25,6 +25,17 @@ use super::{
     sha2::{self, Sha2State},
 };
 
+/// Trait for emulators that can step execution
+pub trait EmuStep {
+    fn step<C: EmuContext>(&mut self, ctx: &mut C) -> Result<()>;
+}
+
+impl EmuStep for Emulator {
+    fn step<C: EmuContext>(&mut self, ctx: &mut C) -> Result<()> {
+        self.step(ctx)
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum LoadOp {
     Peek,
@@ -327,7 +338,7 @@ pub struct Risc0Machine<'a, C: Risc0Context> {
 
 impl<'a, C: Risc0Context> Risc0Machine<'a, C> {
     #[inline(always)]
-    pub fn step(emu: &mut Emulator, ctx: &'a mut C) -> Result<()> {
+    pub fn step<E: EmuStep>(emu: &mut E, ctx: &'a mut C) -> Result<()> {
         emu.step(&mut Risc0Machine { ctx })
     }
 

@@ -97,10 +97,10 @@ pub struct DecodedInstruction {
     pub insn: u32,
     top_bit: u32,
     func7: u32,
-    rs2: u32,
-    rs1: u32,
+    pub rs2: u32,
+    pub rs1: u32,
     func3: u32,
-    rd: u32,
+    pub rd: u32,
     opcode: u32,
 }
 
@@ -165,7 +165,7 @@ pub enum InsnKind {
 }
 
 impl DecodedInstruction {
-    fn new(insn: u32) -> Self {
+    pub fn new(insn: u32) -> Self {
         Self {
             insn,
             top_bit: (insn & 0x80000000) >> 31,
@@ -178,18 +178,18 @@ impl DecodedInstruction {
         }
     }
 
-    fn imm_b(&self) -> u32 {
+    pub fn imm_b(&self) -> u32 {
         (self.top_bit * 0xfffff000)
             | ((self.rd & 1) << 11)
             | ((self.func7 & 0x3f) << 5)
             | (self.rd & 0x1e)
     }
 
-    fn imm_i(&self) -> u32 {
+    pub fn imm_i(&self) -> u32 {
         (self.top_bit * 0xfffff000) | (self.func7 << 5) | self.rs2
     }
 
-    fn imm_s(&self) -> u32 {
+    pub fn imm_s(&self) -> u32 {
         (self.top_bit * 0xfffff000) | (self.func7 << 5) | self.rd
     }
 

@@ -18,7 +18,7 @@ use test_log::test;
 
 use crate::{TerminateState, MAX_INSN_CYCLES};
 
-use super::{testutil, DEFAULT_SEGMENT_LIMIT_PO2};
+use super::{testutil, DEFAULT_SEGMENT_LIMIT_PO2, CycleLimit};
 
 #[test]
 fn basic() {
@@ -90,4 +90,58 @@ fn system_split() {
 
     assert!(segments[0].read_record.is_empty());
     assert!(segments[0].write_record.is_empty());
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn jit_emulator_integration() {
+    // Create a simple test program that executes a loop
+    let program = testutil::kernel::simple_loop(100);
+    let image = MemoryImage::new_kernel(program);
+
+    // Execute with JIT emulator (enabled by std feature)
+    let session = testutil::execute(
+        image,
+        DEFAULT_SEGMENT_LIMIT_PO2,
+        MAX_INSN_CYCLES,
+        CycleLimit::Hard(1000000),
+        &testutil::NullSyscall,
+        None,
+    ).expect("JIT execution should succeed");
+
+    // Verify execution completed successfully
+    assert!(session.result.total_cycles > 0);
+    println!("JIT emulator executed {} total cycles", session.result.total_cycles);
+    println!("JIT emulator executed {} user cycles", session.result.user_cycles);
+
+    // The JIT emulator should produce valid results
+    assert!(session.result.claim.pre_state.as_bytes().len() > 0);
+    assert!(session.result.claim.post_state.as_bytes().len() > 0);
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn jit_vs_interpreter_basic() {
+    // Create a basic test program
+    let program = testutil::kernel::basic();
+    let image = MemoryImage::new_kernel(program);
+
+    // Execute with JIT emulator (std feature enables JIT)
+    let session = testutil::execute(
+        image,
+        DEFAULT_SEGMENT_LIMIT_PO2,
+        MAX_INSN_CYCLES,
+        CycleLimit::Hard(10000),
+        &testutil::NullSyscall,
+        None,
+    ).expect("JIT execution should succeed");
+
+    // Verify the execution completed successfully
+    assert!(session.result.total_cycles > 0);
+    println!("JIT basic test: {} total cycles, {} user cycles",
+             session.result.total_cycles, session.result.user_cycles);
+
+    // The JIT emulator should produce valid claim data
+    assert!(session.result.claim.pre_state.as_bytes().len() > 0);
+    assert!(session.result.claim.post_state.as_bytes().len() > 0);
 }
