@@ -146,10 +146,55 @@ impl JitEmulator {
         }
     }
 
-                /// Try to execute native code (safe demonstration mode)
-    fn try_execute_native_code<C: EmuContext>(&mut self, _ctx: &mut C, _compiled_code: *const u8) -> Result<()> {
-        // Native execution unsupported in this environment: fall back to interpreter
-        Err(anyhow::anyhow!("Native code execution disabled; interpreter fallback"))
+                /// Try to execute native code
+    fn try_execute_native_code<C: EmuContext>(&mut self, ctx: &mut C, compiled_code: *const u8) -> Result<()> {
+        // Create CPU context for native code
+        let mut cpu_context = super::jit::CpuContext::new();
+
+        // Copy registers from emulator context to CPU context
+        for i in 0..32 {
+            cpu_context.registers[i] = ctx.load_register(i).unwrap_or(0);
+        }
+        cpu_context.pc = ctx.get_pc().0;
+
+        // Cast the compiled code to a function pointer and execute it
+        unsafe {
+            let jit_fn: unsafe extern "C" fn(*mut u32) -> i32 =
+                std::mem::transmute(compiled_code);
+
+            let result = jit_fn(cpu_context.registers.as_mut_ptr());
+
+            // Handle the result (PC update, exceptions, etc.)
+            match result {
+                0 => {
+                    // Normal completion - update PC to next instruction
+                    ctx.set_pc(ctx.get_pc() + 4);
+                }
+                pc_value if pc_value > 0x1000 => {
+                    // Branch/jump - set new PC
+                    ctx.set_pc(risc0_binfmt::ByteAddr(pc_value as u32));
+                }
+                8 => {
+                    // ECALL - trigger environment call
+                    return Ok(()); // Let emulator handle ecall
+                }
+                3 => {
+                    // EBREAK - trigger breakpoint
+                    return Ok(()); // Let emulator handle ebreak
+                }
+                _ => {
+                    // Other result codes - advance PC
+                    ctx.set_pc(ctx.get_pc() + 4);
+                }
+            }
+
+            // Copy registers back from CPU context to emulator context
+            for i in 1..32 { // Skip x0 (always zero)
+                ctx.store_register(i, cpu_context.registers[i])?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Get the size of the current basic block (for demonstration)
