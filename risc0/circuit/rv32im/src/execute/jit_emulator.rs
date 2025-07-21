@@ -587,8 +587,8 @@ mod tests {
     #[test]
     fn test_jit_emulator_creation() {
         let emulator = JitEmulator::new().unwrap();
-        // JIT threshold is now environment-dependent
-        if std::env::var("RISC0_DISABLE_JIT").is_ok() {
+        // JIT threshold is now environment-dependent and platform-dependent
+        if std::env::var("RISC0_DISABLE_JIT").is_ok() || cfg!(target_os = "macos") {
             assert_eq!(emulator.jit_threshold, u32::MAX);
             assert!(!emulator.jit_enabled);
         } else {
