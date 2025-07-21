@@ -119,6 +119,12 @@ impl JitEmulator {
             let decoded = DecodedInstruction::new(word);
             let kind = Self::decode_instruction_kind(&decoded);
 
+            // Skip memory operations - they cause segfaults in JIT
+            if matches!(kind, InsnKind::Lw | InsnKind::Sw | InsnKind::Lh | InsnKind::LhU |
+                              InsnKind::Lb | InsnKind::LbU | InsnKind::Sh | InsnKind::Sb) {
+                break;
+            }
+
             block.instructions.push((kind, decoded));
             block.end_addr = current_addr;
 

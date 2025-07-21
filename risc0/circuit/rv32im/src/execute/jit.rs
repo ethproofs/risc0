@@ -129,47 +129,6 @@ impl X86CodeGen {
         self.gen_store_register(rd);
     }
 
-    /// Generate LW instruction (load word)
-    pub fn gen_lw(&mut self, rd: u32, rs1: u32, imm: i32) {
-        // Load base address (rs1) into EAX
-        self.gen_load_register(rs1);
-
-        // Add immediate offset
-        self.code.extend_from_slice(&[0x05]); // add eax, imm32
-        self.code.extend_from_slice(&imm.to_le_bytes());
-
-        // Load word from memory address in EAX
-        self.code.extend_from_slice(&[0x8b, 0x00]); // mov eax, [eax]
-
-        // Store result to rd
-        self.gen_store_register(rd);
-    }
-
-    /// Generate SW instruction (store word)
-    pub fn gen_sw(&mut self, rs2: u32, rs1: u32, imm: i32) {
-        // Load value to store (rs2) into EAX
-        self.gen_load_register(rs2);
-
-        // Push EAX to save the value
-        self.code.push(0x50); // push eax
-
-        // Load base address (rs1) into EAX
-        self.gen_load_register(rs1);
-
-        // Add immediate offset
-        self.code.extend_from_slice(&[0x05]); // add eax, imm32
-        self.code.extend_from_slice(&imm.to_le_bytes());
-
-        // Move address to ECX
-        self.code.extend_from_slice(&[0x89, 0xc1]); // mov ecx, eax
-
-        // Pop value back to EAX
-        self.code.push(0x58); // pop eax
-
-        // Store word to memory address in ECX
-        self.code.extend_from_slice(&[0x89, 0x01]); // mov [ecx], eax
-    }
-
     /// Generate SLL instruction (logical left shift)
     pub fn gen_sll(&mut self, rd: u32, rs1: u32, rs2: u32) {
         // Load rs1 into EAX
@@ -633,10 +592,14 @@ impl JitCompiler {
                     codegen.gen_xor(decoded.rd, decoded.rs1, decoded.rs2);
                 }
                 InsnKind::Lw => {
-                    codegen.gen_lw(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
+                    // Memory operations should fall back to interpreter
+                    // JIT code doesn't have access to emulator's memory system
+                    continue;
                 }
                 InsnKind::Sw => {
-                    codegen.gen_sw(decoded.rs2, decoded.rs1, decoded.imm_s() as i32);
+                    // Memory operations should fall back to interpreter
+                    // JIT code doesn't have access to emulator's memory system
+                    continue;
                 }
                 InsnKind::Sll => {
                     codegen.gen_sll(decoded.rd, decoded.rs1, decoded.rs2);
