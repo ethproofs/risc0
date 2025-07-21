@@ -5,8 +5,14 @@ use anyhow::{Result, anyhow};
 use risc0_binfmt::ByteAddr;
 
 use super::rv32im::{Emulator, EmuContext, InsnKind, DecodedInstruction};
-use super::jit::{JitCompiler, BasicBlock};
+use super::jit::{JitCompiler, BasicBlock, MemoryCallbacks};
 use super::r0vm::EmuStep;
+
+/// Execution context wrapper to pass EmuContext through JIT callbacks safely
+pub struct JitExecutionContext<'a> {
+    pub emu_context: &'a mut dyn EmuContext,
+    pub has_error: bool,
+}
 
 /// JIT-enabled emulator that combines interpretation and compilation
 pub struct JitEmulator {
@@ -105,6 +111,9 @@ impl JitEmulator {
             let decoded = DecodedInstruction::new(word);
             let kind = Self::decode_instruction_kind(&decoded);
 
+            // Memory operations are now supported via callbacks
+            // No need to skip compilation
+
             block.instructions.push((kind, decoded));
             block.end_addr = current_addr;
 
@@ -146,7 +155,7 @@ impl JitEmulator {
         }
     }
 
-                /// Try to execute native code
+                                                                /// Try to execute native code with proper exception handling
     fn try_execute_native_code<C: EmuContext>(&mut self, ctx: &mut C, compiled_code: *const u8) -> Result<()> {
         // Create CPU context for native code
         let mut cpu_context = super::jit::CpuContext::new();
@@ -157,44 +166,93 @@ impl JitEmulator {
         }
         cpu_context.pc = ctx.get_pc().0;
 
-        // Cast the compiled code to a function pointer and execute it
+        // Set up context pointer and callbacks for memory operations
+        cpu_context.emu_context = ctx as *mut C as *mut u8;
+        cpu_context.callbacks = &MEMORY_CALLBACKS;
+
+        // Set the active context for callbacks
         unsafe {
-            let jit_fn: unsafe extern "C" fn(*mut u32) -> i32 =
-                std::mem::transmute(compiled_code);
-
-            let result = jit_fn(cpu_context.registers.as_mut_ptr());
-
-            // Handle the result (PC update, exceptions, etc.)
-            match result {
-                0 => {
-                    // Normal completion - update PC to next instruction
-                    ctx.set_pc(ctx.get_pc() + 4);
-                }
-                pc_value if pc_value > 0x1000 => {
-                    // Branch/jump - set new PC
-                    ctx.set_pc(risc0_binfmt::ByteAddr(pc_value as u32));
-                }
-                8 => {
-                    // ECALL - trigger environment call
-                    return Ok(()); // Let emulator handle ecall
-                }
-                3 => {
-                    // EBREAK - trigger breakpoint
-                    return Ok(()); // Let emulator handle ebreak
-                }
-                _ => {
-                    // Other result codes - advance PC
-                    ctx.set_pc(ctx.get_pc() + 4);
-                }
-            }
-
-            // Copy registers back from CPU context to emulator context
-            for i in 1..32 { // Skip x0 (always zero)
-                ctx.store_register(i, cpu_context.registers[i])?;
-            }
+            set_active_context(ctx as *mut C as *mut dyn EmuContext);
         }
 
-        Ok(())
+        // Cast the compiled code to a function pointer and execute it
+        let result = unsafe {
+            let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
+                std::mem::transmute(compiled_code);
+
+            jit_fn(&mut cpu_context as *mut _ as *mut u8)
+        };
+
+        // Clear the active context
+        clear_active_context();
+
+        // Copy registers back from CPU context to emulator context first
+        for i in 1..32 { // Skip x0 (always zero)
+            ctx.store_register(i, cpu_context.registers[i])?;
+        }
+
+        // Handle the result (PC update, exceptions, etc.)
+        match result {
+            0 => {
+                // Normal completion - update PC to next instruction
+                ctx.set_pc(ctx.get_pc() + 4);
+                Ok(())
+            }
+            pc_value if pc_value > 0x1000 => {
+                // Branch/jump - set new PC
+                ctx.set_pc(risc0_binfmt::ByteAddr(pc_value as u32));
+                Ok(())
+            }
+            8 => {
+                // ECALL - trigger actual environment call in emulator
+                tracing::debug!("JIT triggered ECALL, delegating to emulator");
+                match ctx.ecall() {
+                    Ok(_) => {
+                        // Both termination and continuation are handled by the emulator
+                        // PC is already updated appropriately by the ecall handler
+                        Ok(())
+                    }
+                    Err(e) => {
+                        tracing::warn!("ECALL failed in JIT context: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+            3 => {
+                // EBREAK - trigger breakpoint exception
+                tracing::debug!("JIT triggered EBREAK, delegating to emulator");
+                match ctx.trap(super::rv32im::Exception::Breakpoint) {
+                    Ok(_) => {
+                        // Breakpoint handled by emulator, PC updated appropriately
+                        Ok(())
+                    }
+                    Err(e) => {
+                        tracing::warn!("EBREAK failed in JIT context: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+            48 => {
+                // MRET - machine return
+                tracing::debug!("JIT triggered MRET, delegating to emulator");
+                match ctx.mret() {
+                    Ok(_) => {
+                        // Machine return handled by emulator, privilege level and PC updated
+                        Ok(())
+                    }
+                    Err(e) => {
+                        tracing::warn!("MRET failed in JIT context: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!("JIT returned unknown result code: {}", result);
+                // Assume normal completion and advance PC
+                ctx.set_pc(ctx.get_pc() + 4);
+                Ok(())
+            }
+        }
     }
 
     /// Get the size of the current basic block (for demonstration)
@@ -208,16 +266,31 @@ impl JitEmulator {
     /// Simplified instruction decoding
     fn decode_instruction_kind(decoded: &DecodedInstruction) -> InsnKind {
         match (decoded.insn & 0x7f, (decoded.insn >> 12) & 0x7, (decoded.insn >> 25) & 0x7f) {
+            // R-type arithmetic
             (0b0110011, 0b000, 0b0000000) => InsnKind::Add,
             (0b0110011, 0b000, 0b0100000) => InsnKind::Sub,
             (0b0110011, 0b100, 0b0000000) => InsnKind::Xor,
             (0b0110011, 0b110, 0b0000000) => InsnKind::Or,
             (0b0110011, 0b111, 0b0000000) => InsnKind::And,
+            // I-type arithmetic
             (0b0010011, 0b000, _) => InsnKind::AddI,
+            // Load instructions
+            (0b0000011, 0b000, _) => InsnKind::Lb,
+            (0b0000011, 0b001, _) => InsnKind::Lh,
+            (0b0000011, 0b010, _) => InsnKind::Lw,
+            (0b0000011, 0b100, _) => InsnKind::LbU,
+            (0b0000011, 0b101, _) => InsnKind::LhU,
+            // Store instructions
+            (0b0100011, 0b000, _) => InsnKind::Sb,
+            (0b0100011, 0b001, _) => InsnKind::Sh,
+            (0b0100011, 0b010, _) => InsnKind::Sw,
+            // Branch instructions
             (0b1100011, 0b000, _) => InsnKind::Beq,
             (0b1100011, 0b001, _) => InsnKind::Bne,
+            // Jump instructions
             (0b1101111, _, _) => InsnKind::Jal,
             (0b1100111, _, _) => InsnKind::JalR,
+            // System instructions
             (0b1110011, 0b000, 0b0000000) => InsnKind::Eany,
             _ => InsnKind::Invalid,
         }
@@ -232,6 +305,8 @@ impl JitEmulator {
             InsnKind::Eany | InsnKind::Mret
         )
     }
+
+
 
     /// Get compilation statistics
     pub fn get_stats(&self) -> &JitStats {
@@ -384,6 +459,126 @@ pub unsafe extern "C" fn jit_store_memory(_ctx: *mut u8, _addr: u32, _value: u32
     // In a real implementation, we'd need to properly cast the context
     // and store to memory
 }
+
+// Thread-local storage for the active emulator context
+thread_local! {
+    static ACTIVE_EMU_CONTEXT: std::cell::RefCell<Option<*mut dyn EmuContext>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Set the active emulator context for JIT callbacks
+/// # Safety
+/// The context must remain valid for the duration of JIT execution
+#[allow(dead_code)]
+unsafe fn set_active_context(ctx: *mut dyn EmuContext) {
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        *active.borrow_mut() = Some(ctx);
+    });
+}
+
+/// Clear the active emulator context
+#[allow(dead_code)]
+fn clear_active_context() {
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        *active.borrow_mut() = None;
+    });
+}
+
+// Real callback functions that use the active emulator context
+unsafe extern "C" fn emu_load_memory(_ctx_ptr: *mut u8, addr: u32) -> u32 {
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        if let Some(ctx_ptr) = *active.borrow() {
+            let ctx = &mut *ctx_ptr;
+            let word_addr = risc0_binfmt::WordAddr::from(risc0_binfmt::ByteAddr(addr));
+            match ctx.load_memory(word_addr) {
+                Ok(value) => {
+                    tracing::debug!("JIT load_memory: addr=0x{:x} -> 0x{:x}", addr, value);
+                    value
+                }
+                Err(e) => {
+                    tracing::warn!("JIT load_memory failed: addr=0x{:x}, error={}", addr, e);
+                    0 // Fallback value
+                }
+            }
+        } else {
+            tracing::error!("JIT load_memory called without active context");
+            0
+        }
+    })
+}
+
+unsafe extern "C" fn emu_store_memory(_ctx_ptr: *mut u8, addr: u32, value: u32) {
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        if let Some(ctx_ptr) = *active.borrow() {
+            let ctx = &mut *ctx_ptr;
+            let word_addr = risc0_binfmt::WordAddr::from(risc0_binfmt::ByteAddr(addr));
+            match ctx.store_memory(word_addr, value) {
+                Ok(()) => {
+                    tracing::debug!("JIT store_memory: addr=0x{:x} <- 0x{:x}", addr, value);
+                }
+                Err(e) => {
+                    tracing::warn!("JIT store_memory failed: addr=0x{:x}, value=0x{:x}, error={}", addr, value, e);
+                }
+            }
+        } else {
+            tracing::error!("JIT store_memory called without active context");
+        }
+    })
+}
+
+unsafe extern "C" fn emu_load_register(_ctx_ptr: *mut u8, reg: u32) -> u32 {
+    if reg == 0 {
+        return 0; // x0 is hardwired to zero
+    }
+
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        if let Some(ctx_ptr) = *active.borrow() {
+            let ctx = &mut *ctx_ptr;
+            match ctx.load_register(reg as usize) {
+                Ok(value) => {
+                    tracing::debug!("JIT load_register: reg={} -> 0x{:x}", reg, value);
+                    value
+                }
+                Err(e) => {
+                    tracing::warn!("JIT load_register failed: reg={}, error={}", reg, e);
+                    0
+                }
+            }
+        } else {
+            tracing::error!("JIT load_register called without active context");
+            0
+        }
+    })
+}
+
+unsafe extern "C" fn emu_store_register(_ctx_ptr: *mut u8, reg: u32, value: u32) {
+    if reg == 0 {
+        return; // Ignore writes to x0
+    }
+
+    ACTIVE_EMU_CONTEXT.with(|active| {
+        if let Some(ctx_ptr) = *active.borrow() {
+            let ctx = &mut *ctx_ptr;
+            match ctx.store_register(reg as usize, value) {
+                Ok(()) => {
+                    tracing::debug!("JIT store_register: reg={} <- 0x{:x}", reg, value);
+                }
+                Err(e) => {
+                    tracing::warn!("JIT store_register failed: reg={}, value=0x{:x}, error={}", reg, value, e);
+                }
+            }
+        } else {
+            tracing::error!("JIT store_register called without active context");
+        }
+    })
+}
+
+static MEMORY_CALLBACKS: MemoryCallbacks = MemoryCallbacks {
+    load_memory: emu_load_memory,
+    store_memory: emu_store_memory,
+    load_register: emu_load_register,
+    store_register: emu_store_register,
+};
 
 #[cfg(test)]
 mod tests {

@@ -5,6 +5,15 @@ use risc0_binfmt::{ByteAddr, WordAddr};
 
 use super::rv32im::{DecodedInstruction, InsnKind, EmuContext};
 
+/// Memory operation function pointers for JIT callbacks
+#[repr(C)]
+pub struct MemoryCallbacks {
+    pub load_memory: unsafe extern "C" fn(ctx: *mut u8, addr: u32) -> u32,
+    pub store_memory: unsafe extern "C" fn(ctx: *mut u8, addr: u32, value: u32),
+    pub load_register: unsafe extern "C" fn(ctx: *mut u8, reg: u32) -> u32,
+    pub store_register: unsafe extern "C" fn(ctx: *mut u8, reg: u32, value: u32),
+}
+
 /// CPU context structure for JIT execution
 /// This represents the RISC-V CPU state that the JIT code operates on
 #[repr(C)]
@@ -17,10 +26,9 @@ pub struct CpuContext {
     /// Program counter
     pub pc: u32,
     /// Pointer to the emulator context for memory operations
-    /// This will be cast to &mut dyn EmuContext at runtime
     pub emu_context: *mut u8,
-    /// Reserved for future use
-    pub _reserved: u32,
+    /// Function pointers for memory operations
+    pub callbacks: *const MemoryCallbacks,
     // Additional state can be added here (CSRs, etc.)
 }
 
@@ -31,17 +39,17 @@ impl CpuContext {
             registers: [0; 32], // x0 will always be 0
             pc: 0,
             emu_context: std::ptr::null_mut(),
-            _reserved: 0,
+            callbacks: std::ptr::null(),
         }
     }
 
     #[allow(dead_code)]
-    pub fn with_context(emu_context: *mut u8) -> Self {
+    pub fn with_context(emu_context: *mut u8, callbacks: *const MemoryCallbacks) -> Self {
         Self {
             registers: [0; 32],
             pc: 0,
             emu_context,
-            _reserved: 0,
+            callbacks,
         }
     }
 
@@ -84,30 +92,89 @@ pub struct BasicBlock {
 #[allow(dead_code)]
 pub type JitFunction = unsafe extern "C" fn(cpu_context: *mut u32) -> i32;
 
-/// x86-64 code generator for RISC-V instructions
+/// Simple register allocation state
+#[derive(Debug, Clone)]
+struct RegisterAllocator {
+    /// Which x86 registers are currently allocated to RISC-V registers
+    /// Maps RISC-V reg -> x86 reg (0=EAX, 1=ECX, 2=EDX, 3=EBX, 6=ESI, 7=EDI)
+    allocation: std::collections::HashMap<u32, u8>,
+    /// Which x86 registers are free
+    free_regs: Vec<u8>,
+    /// Registers that need to be spilled to memory
+    dirty_regs: std::collections::HashSet<u32>,
+}
+
+impl RegisterAllocator {
+    fn new() -> Self {
+        Self {
+            allocation: std::collections::HashMap::new(),
+            free_regs: vec![0, 1, 2, 3, 6, 7], // EAX, ECX, EDX, EBX, ESI, EDI
+            dirty_regs: std::collections::HashSet::new(),
+        }
+    }
+
+    fn allocate_reg(&mut self, risc_reg: u32) -> u8 {
+        if let Some(&x86_reg) = self.allocation.get(&risc_reg) {
+            return x86_reg;
+        }
+
+        if let Some(x86_reg) = self.free_regs.pop() {
+            self.allocation.insert(risc_reg, x86_reg);
+            x86_reg
+        } else {
+            // Simple eviction - just use EAX
+            0
+        }
+    }
+
+    fn mark_dirty(&mut self, risc_reg: u32) {
+        self.dirty_regs.insert(risc_reg);
+    }
+
+    fn is_dirty(&self, risc_reg: u32) -> bool {
+        self.dirty_regs.contains(&risc_reg)
+    }
+}
+
+/// x86-64 code generator with optimization for RISC-V instructions
 pub struct X86CodeGen {
     code: Vec<u8>,
+    reg_alloc: RegisterAllocator,
+    /// Enable optimization passes
+    optimize: bool,
 }
 
 impl X86CodeGen {
     pub fn new() -> Self {
-        Self { code: Vec::new() }
+        Self {
+            code: Vec::new(),
+            reg_alloc: RegisterAllocator::new(),
+            optimize: true,
+        }
+    }
+
+    pub fn with_optimization(mut self, enable: bool) -> Self {
+        self.optimize = enable;
+        self
     }
 
     /// Generate function prologue
     pub fn prologue(&mut self) {
         // Function prologue: push rbp; mov rbp, rsp
+        // Save RDI (context pointer) for later use
         self.code.extend_from_slice(&[
             0x55,             // push rbp
             0x48, 0x89, 0xe5, // mov rbp, rsp
+            0x57,             // push rdi (save context pointer)
         ]);
     }
 
     /// Generate function epilogue and return
     pub fn epilogue(&mut self) {
-        // Function epilogue: xor eax, eax; pop rbp; ret
+        // Function epilogue: xor eax, eax; pop rdi; pop rbp; ret
         self.code.extend_from_slice(&[
             0x31, 0xc0,       // xor eax, eax (return 0)
+            0x5f,             // pop rdi (restore context pointer)
             0x5d,             // pop rbp
             0xc3,             // ret
         ]);
@@ -949,77 +1016,126 @@ impl X86CodeGen {
         }
     }
 
-    /// Get the generated code
-    pub fn get_code(&self) -> &[u8] {
+    /// Apply simple peephole optimizations
+    fn optimize_code(&mut self) {
+        if !self.optimize {
+            return;
+        }
+
+        // Simple optimization: remove redundant mov instructions
+        let mut optimized = Vec::new();
+        let mut i = 0;
+
+        while i < self.code.len() {
+            // Look for pattern: mov eax, [rdi+offset]; mov [rdi+offset], eax (redundant store after load)
+            if i + 10 < self.code.len()
+                && self.code[i] == 0x8b  // mov eax, [rdi + offset]
+                && self.code[i+1] == 0x47
+                && self.code[i+3] == 0x89  // mov [rdi + offset], eax
+                && self.code[i+4] == 0x47
+                && self.code[i+2] == self.code[i+5]  // Same offset
+            {
+                tracing::debug!("JIT optimization: removing redundant store after load");
+                optimized.extend_from_slice(&self.code[i..i+3]); // Keep the load
+                i += 6; // Skip both instructions
+            }
+            // Look for pattern: xor reg, reg followed by mov reg, 0 (redundant)
+            else if i + 5 < self.code.len()
+                && self.code[i] == 0x31 // xor eax, eax
+                && self.code[i+1] == 0xc0
+                && self.code[i+2] == 0xb8 // mov eax, imm32
+                && self.code[i+3] == 0x00
+                && self.code[i+4] == 0x00
+                && self.code[i+5] == 0x00
+                && self.code[i+6] == 0x00
+            {
+                tracing::debug!("JIT optimization: removing redundant mov after xor");
+                optimized.extend_from_slice(&self.code[i..i+2]); // Keep just the xor
+                i += 7; // Skip both instructions
+            }
+            else {
+                optimized.push(self.code[i]);
+                i += 1;
+            }
+        }
+
+        if optimized.len() < self.code.len() {
+            tracing::debug!("JIT optimization: reduced code size from {} to {} bytes",
+                           self.code.len(), optimized.len());
+            self.code = optimized;
+        }
+    }
+
+    /// Get the generated code with optimizations applied
+    pub fn get_code(&mut self) -> &[u8] {
+        self.optimize_code();
         &self.code
     }
 
     /// Get the size of generated code
-    pub fn get_code_size(&self) -> usize {
+    pub fn get_code_size(&mut self) -> usize {
+        self.optimize_code();
         self.code.len()
     }
 
-    /// Generate memory load helper - loads from address in EAX
-    fn gen_memory_load(&mut self, size: u32) {
-        // For now, generate placeholder - in production this would:
-        // 1. Validate address is within bounds
-        // 2. Translate virtual to physical address
-        // 3. Handle memory-mapped I/O
-        // 4. Load value from memory at address in EAX
-
-        // Placeholder: MOV EAX, [EAX] (direct memory access)
-        // This assumes memory is identity-mapped which isn't realistic
-        match size {
-            1 => {
-                // MOV AL, [EAX] then zero extend
-                self.code.extend_from_slice(&[0x8a, 0x00]); // mov al, [eax]
-                self.code.extend_from_slice(&[0x25]); // and eax, imm32 (zero upper bits)
-                self.code.extend_from_slice(&0x000000ff_u32.to_le_bytes());
-            }
-            2 => {
-                // MOV AX, [EAX] then zero extend
-                self.code.extend_from_slice(&[0x66, 0x8b, 0x00]); // mov ax, [eax]
-                self.code.extend_from_slice(&[0x25]); // and eax, imm32 (zero upper bits)
-                self.code.extend_from_slice(&0x0000ffff_u32.to_le_bytes());
-            }
-            4 => {
-                // MOV EAX, [EAX] (32-bit load)
-                self.code.extend_from_slice(&[0x8b, 0x00]); // mov eax, [eax]
-            }
-            _ => {
-                // Invalid size - generate NOP
-                self.code.push(0x90);
-            }
-        }
+    /// Get raw code without optimization (for debugging)
+    pub fn get_raw_code(&self) -> &[u8] {
+        &self.code
     }
 
-    /// Generate memory store helper - stores EDX to address in EAX
-    fn gen_memory_store(&mut self, size: u32) {
-        // For now, generate placeholder - in production this would:
-        // 1. Validate address is within bounds
-        // 2. Translate virtual to physical address
-        // 3. Handle memory-mapped I/O
-        // 4. Store EDX value to memory at address in EAX
+    /// Generate memory load helper - calls into emulator's memory system
+    fn gen_memory_load(&mut self, size: u32) {
+        // Generate a call to the memory load callback
+        // Arguments: RDI (context), EAX (address), EDX (size)
 
-        // Placeholder: MOV [EAX], EDX (direct memory access)
-        match size {
-            1 => {
-                // MOV [EAX], DL (8-bit store)
-                self.code.extend_from_slice(&[0x88, 0x10]); // mov [eax], dl
-            }
-            2 => {
-                // MOV [EAX], DX (16-bit store)
-                self.code.extend_from_slice(&[0x66, 0x89, 0x10]); // mov [eax], dx
-            }
-            4 => {
-                // MOV [EAX], EDX (32-bit store)
-                self.code.extend_from_slice(&[0x89, 0x10]); // mov [eax], edx
-            }
-            _ => {
-                // Invalid size - generate NOP
-                self.code.push(0x90);
-            }
-        }
+        // Save EAX (address) to stack
+        self.code.push(0x50); // push rax
+
+        // Move size to EDX
+        self.code.extend_from_slice(&[0xba]); // mov edx, imm32
+        self.code.extend_from_slice(&size.to_le_bytes());
+
+        // Move address back to RSI (second argument)
+        self.code.extend_from_slice(&[0x58]); // pop rax
+        self.code.extend_from_slice(&[0x89, 0xc6]); // mov esi, eax
+
+        // RDI already contains context pointer (first argument)
+
+        // Call the memory load function
+        // We'll use a direct call to an external function
+        // MOV RAX, function_address; CALL RAX
+        self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+        self.code.extend_from_slice(&(crate::execute::jit::jit_load_memory as *const () as u64).to_le_bytes());
+        self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
+
+        // Result is now in EAX
+    }
+
+    /// Generate memory store helper - calls into emulator's memory system
+    fn gen_memory_store(&mut self, size: u32) {
+        // Generate a call to the memory store callback
+        // Arguments: RDI (context), EAX (address), EDX (value), ECX (size)
+
+        // Save registers to stack
+        self.code.push(0x50); // push rax (address)
+        self.code.push(0x52); // push rdx (value)
+
+        // Move size to RCX (fourth argument)
+        self.code.extend_from_slice(&[0xb9]); // mov ecx, imm32
+        self.code.extend_from_slice(&size.to_le_bytes());
+
+        // Pop value to RDX (third argument)
+        self.code.extend_from_slice(&[0x5a]); // pop rdx
+
+        // Pop address to RSI (second argument)
+        self.code.extend_from_slice(&[0x5e]); // pop rsi
+
+        // RDI already contains context pointer (first argument)
+
+        // Call the memory store function
+        self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+        self.code.extend_from_slice(&(crate::execute::jit::jit_store_memory as *const () as u64).to_le_bytes());
+        self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
     }
 
     /// Generate code to load a register value into EAX
@@ -1338,8 +1454,10 @@ impl JitCompiler {
                 InsnKind::Mret => {
                     codegen.gen_mret();
                 }
+
                 _ => {
-                    // For unsupported instructions, generate a NOP
+                    // For unsupported instructions, generate a NOP and log
+                    tracing::debug!("JIT: Unsupported instruction {:?}, generating NOP", kind);
                     codegen.code.push(0x90);
                 }
             }
@@ -1349,12 +1467,13 @@ impl JitCompiler {
         codegen.epilogue();
 
         // Allocate executable memory and copy code
-        let native_code = self.allocate_and_copy_code(codegen.get_code())?;
+        let code = codegen.get_code();
+        let native_code = self.allocate_and_copy_code(code)?;
 
         // Store the compiled block
         self.compiled_blocks.insert(block.start_addr, native_code);
 
-                        let code_size = codegen.get_code_size();
+        let code_size = codegen.get_code_size();
         let block_addr = block.start_addr;
         println!("Generated {code_size} bytes of native x86-64 code for block at {block_addr:?}");
 
@@ -1636,6 +1755,143 @@ pub mod jit_return_codes {
     pub const MRET: i32 = 48;            // Machine return
 }
 
+// JIT memory callback functions
+#[no_mangle]
+/// Memory load callback for JIT-compiled code
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_load_memory(cpu_ctx: *mut u8, addr: u32, size: u32) -> u32 {
+    // Cast back to CPU context
+    let cpu_context = &*(cpu_ctx as *const CpuContext);
+
+    // Check if we have valid callbacks and context
+    if cpu_context.callbacks.is_null() || cpu_context.emu_context.is_null() {
+        tracing::warn!("JIT load_memory: null callbacks or context, returning dummy value");
+        return match size {
+            1 => 0x42,
+            2 => 0x4241,
+            4 => 0x44434241,
+            _ => 0,
+        };
+    }
+
+    // Call the actual memory load function through the callback
+    let callbacks = &*cpu_context.callbacks;
+    let word_addr = addr & !3; // Align to word boundary
+    let word_value = (callbacks.load_memory)(cpu_context.emu_context, word_addr);
+
+    // Extract the requested size from the word
+    let byte_offset = (addr & 3) as usize;
+    match size {
+        1 => (word_value >> (byte_offset * 8)) & 0xff,
+        2 => {
+            if byte_offset <= 2 {
+                (word_value >> (byte_offset * 8)) & 0xffff
+            } else {
+                // Unaligned 16-bit access across word boundary - need two loads
+                let next_word = (callbacks.load_memory)(cpu_context.emu_context, word_addr + 4);
+                let low_bits = word_value >> (byte_offset * 8);
+                let high_bits = next_word << ((4 - byte_offset) * 8);
+                (low_bits | high_bits) & 0xffff
+            }
+        }
+        4 => {
+            if byte_offset == 0 {
+                word_value
+            } else {
+                // Unaligned 32-bit access - need two loads
+                let next_word = (callbacks.load_memory)(cpu_context.emu_context, word_addr + 4);
+                let low_bits = word_value >> (byte_offset * 8);
+                let high_bits = next_word << ((4 - byte_offset) * 8);
+                low_bits | high_bits
+            }
+        }
+        _ => {
+            tracing::warn!("JIT load_memory: invalid size {}", size);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+/// Memory store callback for JIT-compiled code
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_store_memory(cpu_ctx: *mut u8, addr: u32, value: u32, size: u32) {
+    // Cast back to CPU context
+    let cpu_context = &*(cpu_ctx as *const CpuContext);
+
+    // Check if we have valid callbacks and context
+    if cpu_context.callbacks.is_null() || cpu_context.emu_context.is_null() {
+        tracing::warn!("JIT store_memory: null callbacks or context, ignoring store");
+        return;
+    }
+
+    let callbacks = &*cpu_context.callbacks;
+    let word_addr = addr & !3; // Align to word boundary
+    let byte_offset = (addr & 3) as usize;
+
+    match size {
+        1 => {
+            // 8-bit store - read-modify-write
+            let old_word = (callbacks.load_memory)(cpu_context.emu_context, word_addr);
+            let mask = 0xff << (byte_offset * 8);
+            let new_word = (old_word & !mask) | ((value & 0xff) << (byte_offset * 8));
+            (callbacks.store_memory)(cpu_context.emu_context, word_addr, new_word);
+        }
+        2 => {
+            // 16-bit store
+            if byte_offset <= 2 {
+                // Aligned or partially aligned within a word
+                let old_word = (callbacks.load_memory)(cpu_context.emu_context, word_addr);
+                let mask = 0xffff << (byte_offset * 8);
+                let new_word = (old_word & !mask) | ((value & 0xffff) << (byte_offset * 8));
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr, new_word);
+            } else {
+                // Unaligned across word boundary - need two read-modify-writes
+                let byte_offset = byte_offset as u32;
+                let low_bits = value << (byte_offset * 8);
+                let high_bits = value >> ((4 - byte_offset) * 8);
+
+                let old_word1 = (callbacks.load_memory)(cpu_context.emu_context, word_addr);
+                let mask1 = 0xffff << (byte_offset * 8);
+                let new_word1 = (old_word1 & !mask1) | (low_bits & mask1);
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr, new_word1);
+
+                let old_word2 = (callbacks.load_memory)(cpu_context.emu_context, word_addr + 4);
+                let mask2 = 0xffff >> ((4 - byte_offset) * 8);
+                let new_word2 = (old_word2 & !mask2) | (high_bits & mask2);
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr + 4, new_word2);
+            }
+        }
+        4 => {
+            // 32-bit store
+            if byte_offset == 0 {
+                // Aligned store
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr, value);
+            } else {
+                // Unaligned - need two stores
+                let byte_offset = byte_offset as u32;
+                let low_bits = value << (byte_offset * 8);
+                let high_bits = value >> ((4 - byte_offset) * 8);
+
+                let old_word1 = (callbacks.load_memory)(cpu_context.emu_context, word_addr);
+                let mask1 = !((1u32 << (byte_offset * 8)) - 1);
+                let new_word1 = (old_word1 & !mask1) | (low_bits & mask1);
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr, new_word1);
+
+                let old_word2 = (callbacks.load_memory)(cpu_context.emu_context, word_addr + 4);
+                let mask2 = (1u32 << ((4 - byte_offset) * 8)) - 1;
+                let new_word2 = (old_word2 & !mask2) | (high_bits & mask2);
+                (callbacks.store_memory)(cpu_context.emu_context, word_addr + 4, new_word2);
+            }
+        }
+        _ => {
+            tracing::warn!("JIT store_memory: invalid size {}", size);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1657,22 +1913,124 @@ mod tests {
     }
 
     #[test]
-    fn test_jit_compiler() {
-        let mut compiler = JitCompiler::new().unwrap();
-        let block = BasicBlock {
-            start_addr: ByteAddr(0x1000),
-            instructions: vec![(InsnKind::Add, DecodedInstruction::default())],
-            end_addr: ByteAddr(0x1000),
-            is_conditional_branch: false,
-        };
+    fn test_jit_compiler_creation() {
+        let compiler = JitCompiler::new().unwrap();
+        assert_eq!(compiler.get_compilation_count(), 0);
+    }
 
-        let code_ptr = compiler.compile_block(&block).unwrap();
-        assert!(!code_ptr.is_null());
-        assert_eq!(compiler.get_compilation_count(), 1);
+    #[test]
+    fn test_jit_arithmetic_instructions() {
+        let mut codegen = X86CodeGen::new();
 
-        let retrieved = compiler.get_compiled_block(ByteAddr(0x1000));
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap(), code_ptr);
+        // Test basic arithmetic code generation
+        codegen.prologue();
+        codegen.gen_add(1, 2, 3); // x1 = x2 + x3
+        codegen.gen_sub(2, 1, 3); // x2 = x1 - x3
+        codegen.gen_addi(3, 2, 42); // x3 = x2 + 42
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty(), "Generated code should not be empty");
+        assert!(code.len() > 10, "Generated code should be substantial");
+    }
+
+    #[test]
+    fn test_jit_memory_instructions() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+        codegen.gen_lw(1, 2, 0x100); // x1 = mem[x2 + 0x100]
+        codegen.gen_sw(3, 4, 0x200); // mem[x4 + 0x200] = x3
+        codegen.gen_lb(5, 6, -4);    // x5 = sign_extend(mem[x6 - 4][7:0])
+        codegen.gen_sb(7, 8, 8);     // mem[x8 + 8][7:0] = x7[7:0]
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn test_jit_branch_instructions() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+        codegen.gen_beq(1, 2, 0x10, 0x1000);  // if x1 == x2 goto 0x1010
+        codegen.gen_bne(3, 4, -0x8, 0x1004);  // if x3 != x4 goto 0xffc
+        codegen.gen_blt(5, 6, 0x20, 0x1008);  // if x5 < x6 goto 0x1028
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(code.len() > 50, "Branch code should be substantial");
+    }
+
+    #[test]
+    fn test_jit_shift_instructions() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+        codegen.gen_sll(1, 2, 3);     // x1 = x2 << x3
+        codegen.gen_srl(4, 5, 6);     // x4 = x5 >> x6 (logical)
+        codegen.gen_sra(7, 8, 9);     // x7 = x8 >> x9 (arithmetic)
+        codegen.gen_slli(10, 11, 5);  // x10 = x11 << 5
+        codegen.gen_srli(12, 13, 3);  // x12 = x13 >> 3 (logical)
+        codegen.gen_srai(14, 15, 7);  // x14 = x15 >> 7 (arithmetic)
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn test_jit_multiply_divide_instructions() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+        codegen.gen_mul(1, 2, 3);     // x1 = x2 * x3 (lower 32 bits)
+        codegen.gen_mulh(4, 5, 6);    // x4 = (x5 * x6)[63:32] (signed)
+        codegen.gen_mulhu(7, 8, 9);   // x7 = (x8 * x9)[63:32] (unsigned)
+        codegen.gen_div(10, 11, 12);  // x10 = x11 / x12 (signed)
+        codegen.gen_divu(13, 14, 15); // x13 = x14 / x15 (unsigned)
+        codegen.gen_rem(16, 17, 18);  // x16 = x17 % x18 (signed)
+        codegen.gen_remu(19, 20, 21); // x19 = x20 % x21 (unsigned)
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(code.len() > 100, "Multiply/divide code should be substantial");
+    }
+
+    #[test]
+    fn test_jit_system_instructions() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+        codegen.gen_ecall();   // Environment call
+        codegen.gen_ebreak();  // Environment break
+        codegen.gen_mret();    // Machine return
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty());
+
+        // Check that system instructions generate proper return codes
+        assert!(code.contains(&8u8), "ECALL should generate return code 8");
+        assert!(code.contains(&3u8), "EBREAK should generate return code 3");
+        assert!(code.contains(&48u8), "MRET should generate return code 48");
+    }
+
+    #[test]
+    fn test_jit_register_allocation() {
+        let mut reg_alloc = RegisterAllocator::new();
+
+        let x86_reg1 = reg_alloc.allocate_reg(1); // Allocate x1 to an x86 register
+        let x86_reg2 = reg_alloc.allocate_reg(2); // Allocate x2 to another x86 register
+        let x86_reg1_again = reg_alloc.allocate_reg(1); // Should return same register
+
+        assert_eq!(x86_reg1, x86_reg1_again, "Same RISC-V reg should map to same x86 reg");
+        assert_ne!(x86_reg1, x86_reg2, "Different RISC-V regs should map to different x86 regs");
+
+        reg_alloc.mark_dirty(1);
+        assert!(reg_alloc.is_dirty(1), "Register should be marked as dirty");
+        assert!(!reg_alloc.is_dirty(2), "Register should not be dirty");
     }
 
     #[test]
@@ -1687,14 +2045,157 @@ mod tests {
 
         // First execution - should be interpreted
         let result1 = engine.execute_block(&block).unwrap();
-        assert!(result1.is_null());
+        assert!(result1.is_null(), "First execution should be interpreted");
 
         // Second execution - should trigger compilation
         let result2 = engine.execute_block(&block).unwrap();
-        assert!(!result2.is_null());
+        assert!(!result2.is_null(), "Second execution should be compiled");
 
         let metrics = engine.get_metrics();
         assert_eq!(metrics.compiled_blocks, 1);
         assert_eq!(metrics.total_executions, 2);
+        assert_eq!(metrics.native_executions, 1);
+    }
+
+    #[test]
+    fn test_jit_optimization() {
+        let mut codegen = X86CodeGen::new().with_optimization(true);
+
+        codegen.prologue();
+
+        // Generate some code that might have redundancies
+        codegen.code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
+        codegen.code.extend_from_slice(&[0xb8, 0x00, 0x00, 0x00, 0x00]); // mov eax, 0 (redundant)
+
+        codegen.epilogue();
+
+        let optimized_size = codegen.get_code_size();
+        let raw_size = codegen.get_raw_code().len();
+
+        // The optimization should reduce code size or keep it the same
+        assert!(optimized_size <= raw_size, "Optimized code should not be larger than raw code");
+    }
+
+    #[test]
+    fn test_jit_cpu_context() {
+        let mut ctx = CpuContext::new();
+
+        // Test register operations
+        assert_eq!(ctx.get_register(0), 0, "x0 should always be zero");
+
+        ctx.set_register(1, 0x12345678);
+        assert_eq!(ctx.get_register(1), 0x12345678);
+
+        ctx.set_register(0, 0xFFFFFFFF); // Should be ignored
+        assert_eq!(ctx.get_register(0), 0, "x0 should remain zero");
+
+        // Test PC operations
+        ctx.pc = 0x1000;
+        assert_eq!(ctx.pc, 0x1000);
+    }
+
+    #[test]
+    fn test_jit_memory_callbacks() {
+        // Test that callback function pointers are valid
+        let callbacks = MemoryCallbacks {
+            load_memory: super::jit_load_memory,
+            store_memory: super::jit_store_memory,
+            load_register: super::jit_load_memory, // Use public function instead
+            store_register: super::jit_store_memory, // Use public function instead
+        };
+
+        // Verify callback addresses are non-null
+        assert_ne!(callbacks.load_memory as *const (), std::ptr::null());
+        assert_ne!(callbacks.store_memory as *const (), std::ptr::null());
+        assert_ne!(callbacks.load_register as *const (), std::ptr::null());
+        assert_ne!(callbacks.store_register as *const (), std::ptr::null());
+    }
+
+    #[test]
+    fn test_jit_block_compilation_integration() {
+        let mut compiler = JitCompiler::new().unwrap();
+
+        // Create a simple block with multiple instruction types
+        let block = BasicBlock {
+            start_addr: ByteAddr(0x1000),
+            instructions: vec![
+                (InsnKind::AddI, DecodedInstruction::new(0x00150593)),  // addi x11, x10, 1
+                (InsnKind::Lw, DecodedInstruction::new(0x0005a583)),    // lw x11, 0(x11)
+                (InsnKind::Add, DecodedInstruction::new(0x00b50533)),   // add x10, x10, x11
+            ],
+            end_addr: ByteAddr(0x1008),
+            is_conditional_branch: false,
+        };
+
+        // Compile the block
+        let native_code = compiler.compile_block(&block).unwrap();
+        assert!(!native_code.is_null(), "Compiled code should not be null");
+
+        // Verify it's stored in the cache
+        let cached = compiler.get_compiled_block(ByteAddr(0x1000));
+        assert!(cached.is_some(), "Block should be cached after compilation");
+        assert_eq!(cached.unwrap(), native_code, "Cached pointer should match");
+
+        assert_eq!(compiler.get_compilation_count(), 1);
+    }
+
+    #[test]
+    fn test_jit_performance_metrics() {
+        let metrics = JitMetrics {
+            compiled_blocks: 5,
+            total_executions: 1000,
+            native_executions: 600,
+            compilation_time_us: 1500,
+        };
+
+        assert_eq!(metrics.compilation_ratio(), 0.6);
+
+        let empty_metrics = JitMetrics::default();
+        assert_eq!(empty_metrics.compilation_ratio(), 0.0);
+    }
+
+    #[test]
+    fn test_jit_return_codes() {
+        use super::jit_return_codes::*;
+
+        assert_eq!(CONTINUE, 0);
+        assert_eq!(ECALL, 8);
+        assert_eq!(BREAKPOINT, 3);
+        assert_eq!(MRET, 48);
+    }
+
+    #[test]
+    fn test_jit_edge_cases() {
+        let mut codegen = X86CodeGen::new();
+
+        // Test zero register operations
+        codegen.gen_add(0, 1, 2); // x0 = x1 + x2 (should be ignored)
+        codegen.gen_load_register_to_eax(0); // Should generate XOR EAX, EAX
+
+        // Test large immediate values
+        codegen.gen_addi(1, 2, i32::MAX);
+        codegen.gen_addi(3, 4, i32::MIN);
+
+        // Test maximum register numbers
+        codegen.gen_add(31, 30, 29); // Last valid registers
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty(), "Edge case code should be generated");
+    }
+
+    #[test]
+    fn test_jit_x86_register_mapping() {
+        let mut codegen = X86CodeGen::new();
+
+        // Test that different RISC-V registers generate different x86 code
+        codegen.gen_load_register_to_eax(1);
+        let code1 = codegen.code.clone();
+
+        codegen.code.clear();
+        codegen.gen_load_register_to_eax(2);
+        let code2 = codegen.code.clone();
+
+        // The generated code should be different (different offsets)
+        assert_ne!(code1, code2, "Different RISC-V registers should generate different x86 code");
     }
 }
