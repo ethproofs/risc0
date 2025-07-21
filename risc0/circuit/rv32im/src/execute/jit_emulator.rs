@@ -150,15 +150,41 @@ impl JitEmulator {
         let mut suspicious_registers = 0;
         for i in 1..8 { // Check first few registers for suspicious values
             if let Ok(val) = ctx.load_register(i) {
-                if val > 0x80000000 {
+                // More intelligent detection: look for truly suspicious patterns
+                // High values alone are normal - they're just memory addresses
+                // Look for patterns that suggest corruption instead
+                let is_suspicious = match val {
+                    // Check for unaligned addresses (not 4-byte aligned)
+                    addr if addr & 0x3 != 0 && addr > 0x1000 => {
+                        tracing::warn!("Unaligned address detected in register x{}: 0x{:08x}", i, val);
+                        true
+                    }
+                    // Check for extremely high addresses that are unlikely to be valid
+                    addr if addr > 0x80000000 && addr < 0xffff0000 => {
+                        tracing::warn!("Extremely high address detected in register x{}: 0x{:08x}", i, val);
+                        true
+                    }
+                    // Check for null pointers (except in x0 which should always be 0)
+                    addr if addr == 0 && i != 0 => {
+                        tracing::warn!("Null pointer detected in register x{}: 0x{:08x}", i, val);
+                        true
+                    }
+                    // Check for obviously corrupted values (all bits set)
+                    addr if addr == 0xffffffff => {
+                        tracing::warn!("Corrupted value detected in register x{}: 0x{:08x}", i, val);
+                        true
+                    }
+                    _ => false
+                };
+
+                if is_suspicious {
                     suspicious_registers += 1;
-                    tracing::warn!("Suspicious register value detected: x{} = 0x{:08x}", i, val);
                 }
             }
         }
 
         // If too many registers have suspicious values, disable JIT to prevent corruption
-        if suspicious_registers >= 3 {
+        if suspicious_registers >= 2 {
             tracing::warn!("Too many suspicious register values detected ({}), disabling JIT for safety", suspicious_registers);
             self.jit_enabled = false;
             return self.interpreter.step(ctx);
@@ -411,10 +437,36 @@ impl JitEmulator {
             tracing::debug!("Pre-JIT register state validation:");
             for i in 0..8 {
                 let reg_val = cpu_context.registers[i];
-                if reg_val > 0x80000000 {
-                    tracing::warn!("  Register x{} has suspiciously high value: 0x{:08x}", i, reg_val);
+                // Only flag truly suspicious patterns, not just high values
+                let is_suspicious = match reg_val {
+                    // Check for unaligned addresses (not 4-byte aligned)
+                    addr if addr & 0x3 != 0 && addr > 0x1000 => {
+                        tracing::warn!("  Register x{} has unaligned address: 0x{:08x}", i, reg_val);
+                        true
+                    }
+                    // Check for extremely high addresses that are unlikely to be valid
+                    addr if addr > 0x80000000 && addr < 0xffff0000 => {
+                        tracing::warn!("  Register x{} has extremely high address: 0x{:08x}", i, reg_val);
+                        true
+                    }
+                    // Check for null pointers (except in x0 which should always be 0)
+                    0 if i != 0 => {
+                        tracing::warn!("  Register x{} has null pointer: 0x{:08x}", i, reg_val);
+                        true
+                    }
+                    // Check for obviously corrupted values (all bits set)
+                    0xffffffff => {
+                        tracing::warn!("  Register x{} has corrupted value: 0x{:08x}", i, reg_val);
+                        true
+                    }
+                    _ => false
+                };
+
+                if is_suspicious {
+                    tracing::warn!("  Register x{} has suspicious value: 0x{:08x}", i, reg_val);
+                } else {
+                    tracing::debug!("  x{}: 0x{:08x}", i, reg_val);
                 }
-                tracing::debug!("  x{}: 0x{:08x}", i, reg_val);
             }
 
             // TEMPORARY: Memory operations in JIT code are disabled and return dummy values
@@ -447,10 +499,36 @@ impl JitEmulator {
         tracing::debug!("Post-JIT register state validation:");
         for i in 0..8 {
             let reg_val = cpu_context.registers[i];
-            if reg_val > 0x80000000 {
-                tracing::warn!("  Register x{} has suspiciously high value after JIT: 0x{:08x}", i, reg_val);
+            // Only flag truly suspicious patterns, not just high values
+            let is_suspicious = match reg_val {
+                // Check for unaligned addresses (not 4-byte aligned)
+                addr if addr & 0x3 != 0 && addr > 0x1000 => {
+                    tracing::warn!("  Register x{} has unaligned address after JIT: 0x{:08x}", i, reg_val);
+                    true
+                }
+                // Check for extremely high addresses that are unlikely to be valid
+                addr if addr > 0x80000000 && addr < 0xffff0000 => {
+                    tracing::warn!("  Register x{} has extremely high address after JIT: 0x{:08x}", i, reg_val);
+                    true
+                }
+                // Check for null pointers (except in x0 which should always be 0)
+                0 if i != 0 => {
+                    tracing::warn!("  Register x{} has null pointer after JIT: 0x{:08x}", i, reg_val);
+                    true
+                }
+                // Check for obviously corrupted values (all bits set)
+                0xffffffff => {
+                    tracing::warn!("  Register x{} has corrupted value after JIT: 0x{:08x}", i, reg_val);
+                    true
+                }
+                _ => false
+            };
+
+            if is_suspicious {
+                tracing::warn!("  Register x{} has suspicious value after JIT: 0x{:08x}", i, reg_val);
+            } else {
+                tracing::debug!("  x{}: 0x{:08x}", i, reg_val);
             }
-            tracing::debug!("  x{}: 0x{:08x}", i, reg_val);
         }
 
         // Check if any memory operations returned the RPC failure sentinel value
@@ -473,8 +551,31 @@ impl JitEmulator {
 
             // ADDITIONAL SAFETY: Validate register values before storing
             // This helps prevent corrupted register values from affecting the guest program
-            if reg_val > 0x80000000 {
-                tracing::warn!("Register x{} has suspiciously high value: 0x{:08x}, clamping to 0x7FFFFFFF", i, reg_val);
+            let is_suspicious = match reg_val {
+                // Check for unaligned addresses (not 4-byte aligned)
+                addr if addr & 0x3 != 0 && addr > 0x1000 => {
+                    tracing::warn!("Register x{} has unaligned address: 0x{:08x}, clamping to aligned value", i, reg_val);
+                    true
+                }
+                // Check for extremely high addresses that are unlikely to be valid
+                addr if addr > 0x80000000 && addr < 0xffff0000 => {
+                    tracing::warn!("Register x{} has extremely high address: 0x{:08x}, clamping to safe value", i, reg_val);
+                    true
+                }
+                // Check for null pointers (except in x0 which should always be 0)
+                0 if i != 0 => {
+                    tracing::warn!("Register x{} has null pointer: 0x{:08x}, clamping to safe value", i, reg_val);
+                    true
+                }
+                // Check for obviously corrupted values (all bits set)
+                0xffffffff => {
+                    tracing::warn!("Register x{} has corrupted value: 0x{:08x}, clamping to safe value", i, reg_val);
+                    true
+                }
+                _ => false
+            };
+
+            if is_suspicious {
                 // Clamp the value to prevent potential issues
                 let clamped_val = 0x7FFFFFFF;
                 match ctx.store_register(i, clamped_val) {
