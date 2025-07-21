@@ -1,5 +1,4 @@
 #![allow(dead_code, unused_imports, unused_variables)]
-#![allow(dead_code, unused_imports, unused_variables)]
 use std::collections::HashMap;
 use anyhow::Result;
 use risc0_binfmt::{ByteAddr, WordAddr};
@@ -1292,7 +1291,7 @@ impl JitCompiler {
                 InsnKind::Jal => {
                     // Extract J-type immediate manually since imm_j() is private
                     let imm_j = ((decoded.insn & 0x80000000) >> 11) | // bit 20 -> bit 31
-                               ((decoded.insn & 0x000ff000)) |         // bits 19:12 -> bits 19:12
+                               (decoded.insn & 0x000ff000) |         // bits 19:12 -> bits 19:12
                                ((decoded.insn & 0x00100000) >> 9) |    // bit 11 -> bit 20
                                ((decoded.insn & 0x7fe00000) >> 20);    // bits 30:21 -> bits 10:1
                     let imm_j = ((imm_j as i32) << 11) >> 11; // Sign extend
@@ -1606,7 +1605,7 @@ impl JitExecutionEngine {
             self.metrics.compilation_time_us += start_time.elapsed().as_micros() as u64;
             self.metrics.compiled_blocks += 1;
 
-            println!("JIT compiled hot block at {:?} after {} executions", addr, count);
+            println!("JIT compiled hot block at {addr:?} after {count} executions");
             return Ok(code_ptr);
         }
 
