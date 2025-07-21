@@ -132,8 +132,11 @@ impl<Risc0ContextT: Risc0Context> BigIntIO for BigIntIOImpl<'_, Risc0ContextT> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct BigIntExec {
+    #[allow(dead_code)]
     pub(crate) mode: u32,
+    #[allow(dead_code)]
     pub(crate) verify_program_ptr: WordAddr,
     pub(crate) verify_program_size: usize,
     pub(crate) witness: BigIntWitness,

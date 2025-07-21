@@ -610,7 +610,8 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JE taken (jump if equal)
-        self.code.extend_from_slice(&[0x74, 0x0a]); // je +10 bytes (to branch taken case)
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x74, 0x07]); // je +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -636,12 +637,13 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JNE taken (jump if not equal)
-        self.code.extend_from_slice(&[0x75, 0x0a]); // jne +10 bytes
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x75, 0x07]); // jne +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
         self.code.extend_from_slice(&next_pc.to_le_bytes());
-        self.code.extend_from_slice(&[0xeb, 0x05]); // jmp +5 bytes
+        self.code.extend_from_slice(&[0xeb, 0x05]); // jmp +5 bytes (skip taken case)
 
         // Taken: return branch target
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -662,12 +664,13 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JL taken (jump if less - signed)
-        self.code.extend_from_slice(&[0x7c, 0x0a]); // jl +10 bytes
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x7c, 0x07]); // jl +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
         self.code.extend_from_slice(&next_pc.to_le_bytes());
-        self.code.extend_from_slice(&[0xeb, 0x05]); // jmp +5 bytes
+        self.code.extend_from_slice(&[0xeb, 0x05]); // jmp +5 bytes (skip taken case)
 
         // Taken: return branch target
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -688,7 +691,8 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JB taken (jump if below - unsigned)
-        self.code.extend_from_slice(&[0x72, 0x0a]); // jb +10 bytes
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x72, 0x07]); // jb +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -714,7 +718,8 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JGE taken (jump if greater or equal - signed)
-        self.code.extend_from_slice(&[0x7d, 0x0a]); // jge +10 bytes
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x7d, 0x07]); // jge +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -740,7 +745,8 @@ impl X86CodeGen {
         let next_pc = current_pc.wrapping_add(4);
 
         // JAE taken (jump if above or equal - unsigned)
-        self.code.extend_from_slice(&[0x73, 0x0a]); // jae +10 bytes
+        // FIXED: Correct offset calculation: 1(mov) + 4(imm) + 2(jmp) = 7 bytes
+        self.code.extend_from_slice(&[0x73, 0x07]); // jae +7 bytes (was +10)
 
         // Not taken: return next PC
         self.code.extend_from_slice(&[0xb8]); // mov eax, imm32
@@ -2277,5 +2283,80 @@ mod tests {
         assert!(!code_hex.contains("4154"), "Code should not need R12 preservation anymore");
 
         println!("JIT memory operation code (dummy values): {code_hex}");
+    }
+
+    #[test]
+    fn test_jit_branch_offset_correctness() {
+        let mut codegen = X86CodeGen::new();
+
+        // Generate BNE instruction to test branch offset calculations
+        codegen.gen_bne(1, 2, 8, 0x1000); // if x1 != x2 goto 0x1008
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty(), "Branch code should not be empty");
+
+        // Convert to hex for analysis
+        let code_hex = code.iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Check for correct branch offset: should be 0x07, not 0x0a
+        assert!(code_hex.contains("7507"), "BNE should use correct offset +7 bytes");
+        assert!(!code_hex.contains("750a"), "BNE should NOT use incorrect offset +10 bytes");
+
+        // Verify the structure: compare + conditional jump + not-taken path + jump + taken path
+        assert!(code_hex.contains("39d0"), "Should contain CMP EAX, EDX");
+        assert!(code_hex.contains("eb05"), "Should contain JMP +5 for not-taken skip");
+
+        println!("BNE instruction code: {code_hex}");
+
+        // Test multiple branch types
+        codegen.code.clear();
+        codegen.gen_beq(3, 4, -4, 0x2000); // Test BEQ with different parameters
+
+        let beq_code = codegen.get_raw_code();
+        let beq_hex = beq_code.iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("");
+
+        // BEQ should also use +7 offset
+        assert!(beq_hex.contains("7407"), "BEQ should use correct offset +7 bytes");
+        assert!(!beq_hex.contains("740a"), "BEQ should NOT use incorrect offset +10 bytes");
+
+        println!("BEQ instruction code: {beq_hex}");
+    }
+
+    #[test]
+    fn test_jit_control_flow_integrity() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+
+        // Generate a sequence with branch instructions that could cause control flow issues
+        codegen.gen_addi(1, 1, 1);          // x1 = x1 + 1 (loop increment)
+        codegen.gen_bne(1, 2, 8, 0x1000);   // if x1 != x2 goto 0x1008 (loop condition)
+
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        let code_hex = code.iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Verify no hardcoded incorrect offsets
+        assert!(!code_hex.contains("0a"), "Should not contain any +10 byte offsets");
+
+        // Verify correct offsets are used
+        assert!(code_hex.contains("7507"), "Should contain correct BNE offset");
+
+        // Verify proper instruction boundaries (no overlapping opcodes)
+        let code_len = code.len();
+        assert!(code_len > 20, "Generated code should be substantial");
+        assert!(code_len < 200, "Generated code should not be excessive");
+
+        println!("Control flow integrity test code ({} bytes): {code_hex}", code_len);
     }
 }

@@ -35,21 +35,44 @@ use crate::{
 const BABY_BEAR_P_U32: u32 = baby_bear::P;
 const BABY_BEAR_P_U64: u64 = baby_bear::P as u64;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct Poseidon2State {
     pub has_state: u32,
     pub state_addr: u32,
     pub buf_out_addr: u32,
     pub is_elem: u32,
     pub check_out: u32,
+    #[allow(dead_code)]
     pub load_tx_type: u32,
     pub next_state: CycleState,
     pub sub_state: u32,
     pub buf_in_addr: u32,
     pub count: u32,
+    #[allow(dead_code)]
     pub mode: u32,
     pub inner: [u32; CELLS],
+    #[allow(dead_code)]
     pub zcheck: ExtVal,
+}
+
+impl Default for Poseidon2State {
+    fn default() -> Self {
+        Self {
+            has_state: 0,
+            state_addr: 0,
+            buf_out_addr: 0,
+            is_elem: 0,
+            check_out: 0,
+            load_tx_type: 0,
+            next_state: CycleState::Decode,
+            sub_state: 0,
+            buf_in_addr: 0,
+            count: 0,
+            mode: 0,
+            inner: [0; CELLS],
+            zcheck: ExtVal::default(),
+        }
+    }
 }
 
 impl Poseidon2State {
@@ -57,17 +80,19 @@ impl Poseidon2State {
         let is_elem = bits_count & PFLAG_IS_ELEM;
         let check_out = bits_count & PFLAG_CHECK_OUT;
         Self {
+            has_state: if state_addr == 0 { 0 } else { 1 },
             state_addr,
             buf_in_addr,
             buf_out_addr,
-            has_state: if state_addr == 0 { 0 } else { 1 },
             is_elem: if is_elem == 0 { 0 } else { 1 },
             check_out: if check_out == 0 { 0 } else { 1 },
             count: bits_count & 0xffff,
             mode: 1,
             load_tx_type: tx::READ,
             next_state: CycleState::PoseidonEntry,
-            ..Default::default()
+            sub_state: 0,
+            inner: [0; CELLS],
+            zcheck: ExtVal::default(),
         }
     }
 
