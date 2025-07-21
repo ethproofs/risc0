@@ -263,35 +263,80 @@ impl JitEmulator {
         if pc.0 == 0x0001000c { 6 } else { 5 }
     }
 
-    /// Simplified instruction decoding
+    /// Comprehensive instruction decoding that mirrors the main emulator
     fn decode_instruction_kind(decoded: &DecodedInstruction) -> InsnKind {
-        match (decoded.insn & 0x7f, (decoded.insn >> 12) & 0x7, (decoded.insn >> 25) & 0x7f) {
-            // R-type arithmetic
+        let opcode = decoded.insn & 0x7f;
+        let func3 = (decoded.insn >> 12) & 0x7;
+        let func7 = (decoded.insn >> 25) & 0x7f;
+
+        match (opcode, func3, func7) {
+            // R-format arithmetic ops
             (0b0110011, 0b000, 0b0000000) => InsnKind::Add,
             (0b0110011, 0b000, 0b0100000) => InsnKind::Sub,
+            (0b0110011, 0b001, 0b0000000) => InsnKind::Sll,
+            (0b0110011, 0b010, 0b0000000) => InsnKind::Slt,
+            (0b0110011, 0b011, 0b0000000) => InsnKind::SltU,
+            (0b0110011, 0b101, 0b0000000) => InsnKind::Srl,
             (0b0110011, 0b100, 0b0000000) => InsnKind::Xor,
+            (0b0110011, 0b101, 0b0100000) => InsnKind::Sra,
             (0b0110011, 0b110, 0b0000000) => InsnKind::Or,
             (0b0110011, 0b111, 0b0000000) => InsnKind::And,
-            // I-type arithmetic
+
+            // M-extension multiply/divide
+            (0b0110011, 0b000, 0b0000001) => InsnKind::Mul,
+            (0b0110011, 0b001, 0b0000001) => InsnKind::MulH,
+            (0b0110011, 0b010, 0b0000001) => InsnKind::MulHSU,
+            (0b0110011, 0b011, 0b0000001) => InsnKind::MulHU,
+            (0b0110011, 0b100, 0b0000001) => InsnKind::Div,
+            (0b0110011, 0b101, 0b0000001) => InsnKind::DivU,
+            (0b0110011, 0b110, 0b0000001) => InsnKind::Rem,
+            (0b0110011, 0b111, 0b0000001) => InsnKind::RemU,
+
+            // I-format arithmetic ops
             (0b0010011, 0b000, _) => InsnKind::AddI,
-            // Load instructions
+            (0b0010011, 0b001, 0b0000000) => InsnKind::SllI,
+            (0b0010011, 0b010, _) => InsnKind::SltI,
+            (0b0010011, 0b011, _) => InsnKind::SltIU,
+            (0b0010011, 0b100, _) => InsnKind::XorI,
+            (0b0010011, 0b101, 0b0000000) => InsnKind::SrlI,
+            (0b0010011, 0b101, 0b0100000) => InsnKind::SraI,
+            (0b0010011, 0b110, _) => InsnKind::OrI,
+            (0b0010011, 0b111, _) => InsnKind::AndI,
+
+            // I-format memory loads
             (0b0000011, 0b000, _) => InsnKind::Lb,
             (0b0000011, 0b001, _) => InsnKind::Lh,
             (0b0000011, 0b010, _) => InsnKind::Lw,
             (0b0000011, 0b100, _) => InsnKind::LbU,
             (0b0000011, 0b101, _) => InsnKind::LhU,
-            // Store instructions
+
+            // S-format memory stores
             (0b0100011, 0b000, _) => InsnKind::Sb,
             (0b0100011, 0b001, _) => InsnKind::Sh,
             (0b0100011, 0b010, _) => InsnKind::Sw,
-            // Branch instructions
+
+            // U-format upper immediate
+            (0b0110111, _, _) => InsnKind::Lui,
+            (0b0010111, _, _) => InsnKind::Auipc,
+
+            // B-format branch instructions
             (0b1100011, 0b000, _) => InsnKind::Beq,
             (0b1100011, 0b001, _) => InsnKind::Bne,
-            // Jump instructions
+            (0b1100011, 0b100, _) => InsnKind::Blt,
+            (0b1100011, 0b101, _) => InsnKind::Bge,
+            (0b1100011, 0b110, _) => InsnKind::BltU,
+            (0b1100011, 0b111, _) => InsnKind::BgeU,
+
+            // J-format jump
             (0b1101111, _, _) => InsnKind::Jal,
+
+            // I-format jump register
             (0b1100111, _, _) => InsnKind::JalR,
+
             // System instructions
+            (0b1110011, 0b000, 0b0011000) => InsnKind::Mret,
             (0b1110011, 0b000, 0b0000000) => InsnKind::Eany,
+
             _ => InsnKind::Invalid,
         }
     }
@@ -414,9 +459,6 @@ impl EmuStep for AdaptiveJitEmulator {
         self.step(ctx)
     }
 }
-
-// JIT callback functions for native code to interact with emulator
-// JIT callback functions are now defined in jit.rs to avoid symbol conflicts
 
 // Thread-local storage for the active emulator context
 thread_local! {
