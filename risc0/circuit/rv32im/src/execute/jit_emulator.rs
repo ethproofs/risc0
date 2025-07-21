@@ -304,11 +304,17 @@ impl JitEmulator {
             // 2. Memory callbacks were clobbering RDI without saving/restoring it
             // 3. Stack alignment issues causing corruption during function calls
             //
-            // All issues are now fixed:
-            // - Prologue no longer pushes RDI, preserves R12/R13 instead
-            // - Memory callbacks save RDI to callee-saved R12 register (not stack)
-            // - Proper x86-64 calling convention with 64-bit register usage
-            // - No complex stack manipulation that could cause alignment issues
+            // TEMPORARY: Memory operations in JIT code are disabled and return dummy values
+            // This isolates whether the crashes are caused by the callback mechanism itself
+            // or some other aspect of the JIT system. If crashes stop, the issue is in
+            // the memory callback implementation or calling convention.
+            //
+            // Current status:
+            // - Prologue no longer pushes RDI, preserves context pointer
+            // - Memory loads return hardcoded dummy values (no callbacks)
+            // - Memory stores are NOPs (no callbacks)
+            // - Proper x86-64 calling convention with minimal register usage
+            // - No complex register preservation that could cause corruption
             jit_fn(context_ptr)
         };
 
