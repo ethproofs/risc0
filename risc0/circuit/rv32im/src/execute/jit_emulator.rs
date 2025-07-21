@@ -336,6 +336,8 @@ impl JitEmulator {
         // Clear the active context
         clear_active_context();
 
+        tracing::debug!("JIT function call completed, processing results");
+
         // Check if any memory operations returned the RPC failure sentinel value
         // This indicates RPC communication failed and JIT should be disabled
         for i in 1..32 {
@@ -346,34 +348,60 @@ impl JitEmulator {
             }
         }
 
+        tracing::debug!("Starting register copy-back from CPU context to emulator context");
+
         // Copy registers back from CPU context to emulator context first
+        // THIS IS A LIKELY SOURCE OF RPC COMMUNICATION FAILURE
         for i in 1..32 { // Skip x0 (always zero)
-            ctx.store_register(i, cpu_context.registers[i])?;
+            tracing::debug!("Copying register {i}: 0x{:08x}", cpu_context.registers[i]);
+
+            match ctx.store_register(i, cpu_context.registers[i]) {
+                Ok(()) => {
+                    tracing::debug!("Successfully stored register {i}");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to store register {i}: {e}");
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("rx len failed") || error_str.contains("failed to fill whole buffer") {
+                        tracing::error!("RPC failure during register store for register {i}, disabling JIT");
+                        self.jit_enabled = false;
+                        return Err(anyhow!("RPC communication failure during register store"));
+                    }
+                    return Err(e);
+                }
+            }
         }
+
+        tracing::debug!("Register copy-back completed successfully, handling JIT result: {result}");
 
         // Handle the result (PC update, exceptions, etc.)
         match result {
             0 => {
                 // Normal completion - update PC to next instruction
+                tracing::debug!("JIT result: normal completion, updating PC");
                 ctx.set_pc(ctx.get_pc() + 4);
+                tracing::debug!("PC updated successfully");
                 Ok(())
             }
             pc_value if pc_value > 0x1000 => {
                 // Branch/jump - set new PC
+                tracing::debug!("JIT result: branch/jump to PC 0x{:08x}", pc_value);
                 ctx.set_pc(risc0_binfmt::ByteAddr(pc_value as u32));
+                tracing::debug!("Branch PC updated successfully");
                 Ok(())
             }
             8 => {
                 // ECALL - trigger actual environment call in emulator
-                tracing::debug!("JIT triggered ECALL, delegating to emulator");
+                tracing::debug!("JIT result: ECALL, delegating to emulator");
                 match ctx.ecall() {
                     Ok(_) => {
+                        tracing::debug!("ECALL handled successfully");
                         // Both termination and continuation are handled by the emulator
                         // PC is already updated appropriately by the ecall handler
                         Ok(())
                     }
                     Err(e) => {
-                        tracing::warn!("ECALL failed in JIT context: {}", e);
+                        tracing::error!("ECALL failed in JIT context: {e}");
                         // Check if this is also an RPC failure
                         let error_str = format!("{e:?}");
                         if error_str.contains("rx len failed") || error_str.contains("failed to fill whole buffer") {
@@ -386,28 +414,30 @@ impl JitEmulator {
             }
             3 => {
                 // EBREAK - trigger breakpoint exception
-                tracing::debug!("JIT triggered EBREAK, delegating to emulator");
+                tracing::debug!("JIT result: EBREAK, delegating to emulator");
                 match ctx.trap(super::rv32im::Exception::Breakpoint) {
                     Ok(_) => {
+                        tracing::debug!("EBREAK handled successfully");
                         // Breakpoint handled by emulator, PC updated appropriately
                         Ok(())
                     }
                     Err(e) => {
-                        tracing::warn!("EBREAK failed in JIT context: {}", e);
+                        tracing::error!("EBREAK failed in JIT context: {e}");
                         Err(e)
                     }
                 }
             }
             48 => {
                 // MRET - machine return
-                tracing::debug!("JIT triggered MRET, delegating to emulator");
+                tracing::debug!("JIT result: MRET, delegating to emulator");
                 match ctx.mret() {
                     Ok(_) => {
+                        tracing::debug!("MRET handled successfully");
                         // Machine return handled by emulator, privilege level and PC updated
                         Ok(())
                     }
                     Err(e) => {
-                        tracing::warn!("MRET failed in JIT context: {}", e);
+                        tracing::error!("MRET failed in JIT context: {e}");
                         Err(e)
                     }
                 }
@@ -415,7 +445,9 @@ impl JitEmulator {
             _ => {
                 tracing::warn!("JIT returned unknown result code: {result}");
                 // Assume normal completion and advance PC
+                tracing::debug!("Unknown result code, advancing PC normally");
                 ctx.set_pc(ctx.get_pc() + 4);
+                tracing::debug!("PC advanced successfully");
                 Ok(())
             }
         }
