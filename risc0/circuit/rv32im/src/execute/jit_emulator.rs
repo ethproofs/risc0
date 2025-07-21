@@ -299,23 +299,38 @@ impl JitEmulator {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            // FIXED: All CPU context corruption bugs that caused segfaults:
-            // 1. Prologue was pushing RDI (context pointer) and corrupting it
-            // 2. Memory callbacks were clobbering RDI without saving/restoring it
-            // 3. Stack alignment issues causing corruption during function calls
-            //
+            // DEBUGGING: Add extensive validation and logging to track RDI corruption
+            tracing::debug!("JIT execution starting:");
+            tracing::debug!("  CPU context pointer: {context_ptr:p}");
+            tracing::debug!("  CPU context as usize: 0x{:x}", context_ptr as usize);
+            tracing::debug!("  Compiled code pointer: {compiled_code:p}");
+
+            // Verify the context is readable by accessing a known field
+            let test_read = std::ptr::read_volatile(context_ptr as *const u8);
+            tracing::debug!("  Context memory test read: 0x{test_read:02x}");
+
+            // Log the first few values in the CPU context for debugging
+            let ctx_words = std::slice::from_raw_parts(context_ptr as *const u32, 8);
+            tracing::debug!("  CPU context first 8 words: {:08x?}", ctx_words);
+
             // TEMPORARY: Memory operations in JIT code are disabled and return dummy values
             // This isolates whether the crashes are caused by the callback mechanism itself
             // or some other aspect of the JIT system. If crashes stop, the issue is in
             // the memory callback implementation or calling convention.
             //
-            // Current status:
-            // - Prologue no longer pushes RDI, preserves context pointer
-            // - Memory loads return hardcoded dummy values (no callbacks)
-            // - Memory stores are NOPs (no callbacks)
-            // - Proper x86-64 calling convention with minimal register usage
-            // - No complex register preservation that could cause corruption
-            jit_fn(context_ptr)
+            // DISCOVERY: Crashes continue even with callbacks disabled, so the issue is
+            // in the core JIT register access system - RDI is becoming null somehow.
+            //
+            // Current debugging focus:
+            // - Verify CPU context pointer is valid before JIT call
+            // - Track when and how RDI becomes corrupted
+            // - Ensure calling convention matches between caller and generated code
+
+            tracing::debug!("About to call JIT function with context at {context_ptr:p}");
+            let result = jit_fn(context_ptr);
+            tracing::debug!("JIT function returned: {result}");
+
+            result
         };
 
         // Clear the active context
