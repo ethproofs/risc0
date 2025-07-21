@@ -1102,10 +1102,25 @@ impl X86CodeGen {
         &self.code
     }
 
+    /// Debug function to dump generated code as hex
+    pub fn debug_dump_code(&self) -> String {
+        let mut hex_dump = String::new();
+        for (i, byte) in self.code.iter().enumerate() {
+            if i % 16 == 0 {
+                hex_dump.push_str(&format!("\n{:04x}: ", i));
+            }
+            hex_dump.push_str(&format!("{:02x} ", byte));
+        }
+        hex_dump
+    }
+
     /// Generate memory load helper - calls into emulator's memory system
     fn gen_memory_load(&mut self, size: u32) {
         // RE-ENABLED: Memory callbacks now that JIT system is stable
         // We'll use a robust approach that preserves RDI throughout
+
+        // DEBUG: Log the memory load operation
+        tracing::debug!("JIT generating memory load: size={}", size);
 
         // Save RDI to a callee-saved register (R12) before making the call
         self.code.extend_from_slice(&[0x41, 0x54]); // push r12
@@ -1131,12 +1146,18 @@ impl X86CodeGen {
         self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
         self.code.extend_from_slice(&[0x41, 0x5c]); // pop r12
         self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
+
+        // DEBUG: Log the generated code size
+        tracing::debug!("JIT memory load generated {} bytes", self.code.len());
     }
 
     /// Generate memory store helper - calls into emulator's memory system
     fn gen_memory_store(&mut self, size: u32) {
         // RE-ENABLED: Memory callbacks now that JIT system is stable
         // We'll use a robust approach that preserves RDI throughout
+
+        // DEBUG: Log the memory store operation
+        tracing::debug!("JIT generating memory store: size={}", size);
 
         // Save RDI to a callee-saved register (R12) before making the call
         self.code.extend_from_slice(&[0x41, 0x54]); // push r12
@@ -1163,6 +1184,9 @@ impl X86CodeGen {
         self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
         self.code.extend_from_slice(&[0x41, 0x5c]); // pop r12
         self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
+
+        // DEBUG: Log the generated code size
+        tracing::debug!("JIT memory store generated {} bytes", self.code.len());
     }
 
     /// Generate code to load a register value into EAX

@@ -294,6 +294,16 @@ impl JitEmulator {
 
         tracing::debug!("JIT calling native code at {compiled_code:p} with context at {context_ptr:p}");
 
+        // DEBUG: Dump the generated code for analysis
+        let code_slice = unsafe {
+            std::slice::from_raw_parts(compiled_code as *const u8, 64) // First 64 bytes
+        };
+        let code_hex: String = code_slice.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::debug!("Generated x86-64 code (first 64 bytes): {}", code_hex);
+
         // Cast the compiled code to a function pointer and execute it
         let result = unsafe {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
