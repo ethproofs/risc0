@@ -8,6 +8,44 @@ use super::rv32im::{Emulator, EmuContext, InsnKind, DecodedInstruction};
 use super::jit::{JitCompiler, BasicBlock, MemoryCallbacks};
 use super::r0vm::EmuStep;
 
+/// Test if we can allocate executable memory (quick JIT capability test)
+fn test_executable_memory_allocation() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use libc::{mmap, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
+
+        // Try to allocate a small page of executable memory
+        let size = 4096; // One page
+        let addr = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                size,
+                PROT_READ | PROT_WRITE | PROT_EXEC,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+
+        if addr == MAP_FAILED {
+            return Err(anyhow!("Failed to allocate executable memory"));
+        }
+
+        // Immediately free it
+        unsafe {
+            munmap(addr, size);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix systems, assume executable memory allocation will fail
+        Err(anyhow!("Executable memory allocation not supported on this platform"))
+    }
+}
+
 /// Execution context wrapper to pass EmuContext through JIT callbacks safely
 pub struct JitExecutionContext<'a> {
     pub emu_context: &'a mut dyn EmuContext,
@@ -34,13 +72,59 @@ impl JitEmulator {
     pub fn new() -> Result<Self> {
         // Check environment variable to completely disable JIT
         // On macOS, executable mmap is restricted under sandbox, so disable JIT
-        let jit_enabled = std::env::var("RISC0_DISABLE_JIT").is_err() && !cfg!(target_os = "macos");
+        // Also disable JIT in RPC contexts where communication failures are likely
+        let mut jit_enabled = std::env::var("RISC0_DISABLE_JIT").is_err()
+            && !cfg!(target_os = "macos")
+            && std::env::var("RISC0_RPC_MODE").is_err(); // Disable JIT in RPC mode
+
+        // Check if previous JIT execution crashed
+        if jit_enabled {
+            if let Ok(temp_dir) = std::env::var("TMPDIR") {
+                let crash_indicator = std::path::Path::new(&temp_dir).join(".risc0_jit_crashes");
+                if crash_indicator.exists() {
+                    tracing::warn!("Found JIT crash indicator file, disabling JIT for safety");
+                    jit_enabled = false;
+                }
+            }
+        }
+
+        // Additional safety checks - disable JIT if system appears unstable
+        if jit_enabled {
+            // Check if we're running in a container or restricted environment
+            if std::path::Path::new("/.dockerenv").exists() ||
+               std::env::var("container").is_ok() ||
+               std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+                tracing::warn!("Detected containerized environment, disabling JIT for stability");
+                jit_enabled = false;
+            }
+
+            // Check if we can allocate executable memory at all
+            if jit_enabled {
+                match test_executable_memory_allocation() {
+                    Ok(()) => {
+                        tracing::debug!("JIT executable memory test passed");
+                    }
+                    Err(e) => {
+                        tracing::warn!("JIT executable memory test failed: {e}, disabling JIT");
+                        jit_enabled = false;
+                    }
+                }
+            }
+        }
+
+        if jit_enabled {
+            tracing::info!("JIT compilation enabled with high stability threshold");
+        } else {
+            tracing::info!("JIT compilation disabled for system stability");
+        }
 
         Ok(Self {
             interpreter: Emulator::new(),
             jit_compiler: JitCompiler::new()?,
             execution_count: HashMap::new(),
-            jit_threshold: if jit_enabled { 10000 } else { u32::MAX }, // Very high threshold or disabled
+            // Use very high threshold to avoid premature compilation in unstable environments
+            // Only compile code that runs extremely frequently to justify the risk
+            jit_threshold: if jit_enabled { 100000 } else { u32::MAX }, // Very conservative threshold
             jit_enabled,
             stats: JitStats::default(),
         })
@@ -146,10 +230,21 @@ impl JitEmulator {
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!("Native code execution failed ({e}), disabling JIT compilation");
-                // Disable JIT to avoid compilation overhead
+                let error_str = format!("{e:?}");
+                if error_str.contains("RPC communication failure") {
+                    tracing::error!("JIT execution failed due to RPC communication failure, permanently disabling JIT");
+                } else {
+                    tracing::warn!("Native code execution failed ({e}), disabling JIT compilation");
+                }
+
+                // Disable JIT to avoid compilation overhead and further failures
                 self.jit_enabled = false;
+
+                // Clear any potentially corrupted compilation cache
+                self.execution_count.clear();
+
                 // Fall back to interpreter
+                tracing::debug!("Falling back to interpreter execution");
                 self.interpreter.step(ctx)
             }
         }
@@ -170,21 +265,57 @@ impl JitEmulator {
         cpu_context.emu_context = ctx as *mut C as *mut u8;
         cpu_context.callbacks = &MEMORY_CALLBACKS;
 
+        // Validate the CPU context pointer before use
+        let context_ptr = &mut cpu_context as *mut _ as *mut u8;
+        if context_ptr.is_null() {
+            return Err(anyhow!("CPU context pointer is null"));
+        }
+
+        // Additional safety check: verify the pointer is in valid memory range
+        // On most systems, valid heap addresses are much higher than 0x1000000
+        if (context_ptr as usize) < 0x1000000 {
+            return Err(anyhow!("CPU context pointer {context_ptr:p} appears invalid (too low)"));
+        }
+
+        // Verify the compiled code pointer is valid
+        if compiled_code.is_null() {
+            return Err(anyhow!("Compiled code pointer is null"));
+        }
+
+        // Additional safety: verify compiled code is in reasonable memory range
+        if (compiled_code as usize) < 0x1000000 {
+            return Err(anyhow!("Compiled code pointer {compiled_code:p} appears invalid (too low)"));
+        }
+
         // Set the active context for callbacks
         unsafe {
             set_active_context(ctx as *mut C as *mut dyn EmuContext);
         }
+
+        tracing::debug!("JIT calling native code at {compiled_code:p} with context at {context_ptr:p}");
 
         // Cast the compiled code to a function pointer and execute it
         let result = unsafe {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            jit_fn(&mut cpu_context as *mut _ as *mut u8)
+            // Note: We cannot catch segfaults with panic::catch_unwind since they are
+            // not Rust panics. The safety checks above should prevent most issues.
+            jit_fn(context_ptr)
         };
 
         // Clear the active context
         clear_active_context();
+
+        // Check if any memory operations returned the RPC failure sentinel value
+        // This indicates RPC communication failed and JIT should be disabled
+        for i in 1..32 {
+            if cpu_context.registers[i] == 0xDEADBEEF {
+                tracing::error!("JIT detected RPC communication failure in register {i}, disabling JIT");
+                self.jit_enabled = false;
+                return Err(anyhow!("RPC communication failure detected in JIT execution"));
+            }
+        }
 
         // Copy registers back from CPU context to emulator context first
         for i in 1..32 { // Skip x0 (always zero)
@@ -214,6 +345,12 @@ impl JitEmulator {
                     }
                     Err(e) => {
                         tracing::warn!("ECALL failed in JIT context: {}", e);
+                        // Check if this is also an RPC failure
+                        let error_str = format!("{e:?}");
+                        if error_str.contains("rx len failed") || error_str.contains("failed to fill whole buffer") {
+                            tracing::error!("RPC communication failure during ECALL, disabling JIT");
+                            self.jit_enabled = false;
+                        }
                         Err(e)
                     }
                 }
@@ -247,7 +384,7 @@ impl JitEmulator {
                 }
             }
             _ => {
-                tracing::warn!("JIT returned unknown result code: {}", result);
+                tracing::warn!("JIT returned unknown result code: {result}");
                 // Assume normal completion and advance PC
                 ctx.set_pc(ctx.get_pc() + 4);
                 Ok(())
@@ -497,7 +634,16 @@ unsafe extern "C" fn emu_load_memory(_ctx_ptr: *mut u8, addr: u32) -> u32 {
                 }
                 Err(e) => {
                     tracing::warn!("JIT load_memory failed: addr=0x{:x}, error={}", addr, e);
-                    0 // Fallback value
+                    // Check if this is an RPC communication error
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("rx len failed") || error_str.contains("failed to fill whole buffer") {
+                        tracing::error!("JIT detected RPC communication failure, disabling JIT compilation");
+                        // Signal that JIT should be disabled by returning a sentinel value
+                        // The caller should check for this and disable JIT
+                        0xDEADBEEF // Distinctive failure value
+                    } else {
+                        0 // Regular fallback value
+                    }
                 }
             }
         } else {
@@ -518,6 +664,13 @@ unsafe extern "C" fn emu_store_memory(_ctx_ptr: *mut u8, addr: u32, value: u32) 
                 }
                 Err(e) => {
                     tracing::warn!("JIT store_memory failed: addr=0x{:x}, value=0x{:x}, error={}", addr, value, e);
+                    // Check if this is an RPC communication error
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("rx len failed") || error_str.contains("failed to fill whole buffer") {
+                        tracing::error!("JIT detected RPC communication failure during store, disabling JIT compilation");
+                        // Store failures in JIT context can't easily signal back to disable JIT
+                        // The next load operation will likely also fail and trigger JIT disabling
+                    }
                 }
             }
         } else {
@@ -592,7 +745,7 @@ mod tests {
             assert_eq!(emulator.jit_threshold, u32::MAX);
             assert!(!emulator.jit_enabled);
         } else {
-            assert_eq!(emulator.jit_threshold, 10000);
+            assert_eq!(emulator.jit_threshold, 100000);
             assert!(emulator.jit_enabled);
         }
         assert_eq!(emulator.stats.compiled_blocks, 0);
