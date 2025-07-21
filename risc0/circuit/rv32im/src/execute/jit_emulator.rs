@@ -7,11 +7,12 @@ use super::jit::{JitCompiler, BasicBlock};
 use super::r0vm::EmuStep;
 
 /// Register context for JIT execution - matches the layout expected by JIT code
-#[repr(C)]
+#[repr(C, align(8))]
 #[allow(dead_code)]
 struct JitRegContext {
     registers: [u32; 32],
     pc: u32,
+    _padding: u32, // Ensure 8-byte alignment
 }
 
 impl JitRegContext {
@@ -19,6 +20,7 @@ impl JitRegContext {
         let mut reg_context = Self {
             registers: [0; 32],
             pc: ctx.get_pc().0,
+            _padding: 0,
         };
 
         // Load all registers from emulator context
@@ -183,6 +185,12 @@ impl JitEmulator {
     fn execute_compiled_block<C: EmuContext>(&mut self, ctx: &mut C, compiled_code: *const u8) -> Result<()> {
         tracing::debug!("Executing compiled block at {:?}", ctx.get_pc());
 
+        // Validate the compiled code pointer
+        if compiled_code.is_null() {
+            tracing::warn!("Null compiled code pointer, falling back to interpreter");
+            return self.interpreter.step(ctx);
+        }
+
         // Create register context from emulator state
         let mut reg_context = JitRegContext::new(ctx)?;
 
@@ -190,6 +198,12 @@ impl JitEmulator {
         let result = unsafe {
             let jit_fn: unsafe extern "C" fn(*mut JitRegContext) -> i32 =
                 std::mem::transmute(compiled_code);
+
+            // Add a safety check - ensure the function pointer is valid
+            if compiled_code as usize % 8 != 0 {
+                tracing::warn!("Unaligned compiled code pointer, falling back to interpreter");
+                return self.interpreter.step(ctx);
+            }
 
             jit_fn(&mut reg_context as *mut JitRegContext)
         };

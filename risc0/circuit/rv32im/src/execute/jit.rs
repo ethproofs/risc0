@@ -470,7 +470,7 @@ impl X86CodeGen {
         if reg == 0 {
             // x0 is always zero
             self.code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
-        } else {
+        } else if reg < 32 {
             // Load from register context: MOV EAX, [RDI + reg*4]
             // RDI points to JitRegContext.registers array
             let offset = reg * 4;
@@ -481,6 +481,9 @@ impl X86CodeGen {
                 self.code.extend_from_slice(&[0x8b, 0x87]); // mov eax, [rdi + disp32]
                 self.code.extend_from_slice(&offset.to_le_bytes());
             }
+        } else {
+            // Invalid register - return 0
+            self.code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
         }
     }
 
@@ -489,7 +492,7 @@ impl X86CodeGen {
         if reg == 0 {
             // x0 is always zero
             self.code.extend_from_slice(&[0x31, 0xc9]); // xor ecx, ecx
-        } else {
+        } else if reg < 32 {
             // Load from register context: MOV ECX, [RDI + reg*4]
             let offset = reg * 4;
             if offset < 128 {
@@ -499,12 +502,15 @@ impl X86CodeGen {
                 self.code.extend_from_slice(&[0x8b, 0x8f]); // mov ecx, [rdi + disp32]
                 self.code.extend_from_slice(&offset.to_le_bytes());
             }
+        } else {
+            // Invalid register - return 0
+            self.code.extend_from_slice(&[0x31, 0xc9]); // xor ecx, ecx
         }
     }
 
     /// Store EAX value to register
     fn gen_store_register(&mut self, reg: u32) {
-        if reg != 0 {
+        if reg != 0 && reg < 32 {
             // Store to register context: MOV [RDI + reg*4], EAX
             let offset = reg * 4;
             if offset < 128 {
@@ -515,6 +521,7 @@ impl X86CodeGen {
                 self.code.extend_from_slice(&offset.to_le_bytes());
             }
         }
+        // For reg == 0 or invalid registers, do nothing (x0 is always zero)
     }
 
     /// Get the generated code
@@ -699,35 +706,32 @@ impl JitCompiler {
         Ok(code_ptr)
     }
 
-    /// Allocate executable memory
+    /// Allocate executable memory for JIT code
     fn allocate_executable_memory(&self, size: usize) -> Result<*const u8> {
-        #[cfg(unix)]
-        {
-            use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
+        // Ensure size is aligned to 8 bytes
+        let aligned_size = (size + 7) & !7;
 
-            let aligned_size = (size + 4095) & !4095; // Round up to page size
+        unsafe {
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                aligned_size,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            );
 
-            let addr = unsafe {
-                mmap(
-                    std::ptr::null_mut(),
-                    aligned_size,
-                    PROT_READ | PROT_WRITE | PROT_EXEC,
-                    MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1,
-                    0,
-                )
-            };
-
-            if addr == MAP_FAILED {
+            if ptr == libc::MAP_FAILED {
                 return Err(anyhow::anyhow!("Failed to allocate executable memory"));
             }
 
-            Ok(addr as *const u8)
-        }
+            // Ensure the pointer is aligned to 8 bytes
+            if (ptr as usize) % 8 != 0 {
+                libc::munmap(ptr, aligned_size);
+                return Err(anyhow::anyhow!("Allocated memory is not properly aligned"));
+            }
 
-        #[cfg(not(unix))]
-        {
-            Err(anyhow::anyhow!("Executable memory allocation not supported on this platform"))
+            Ok(ptr as *const u8)
         }
     }
 
