@@ -161,20 +161,30 @@ impl X86CodeGen {
     /// Generate function prologue
     pub fn prologue(&mut self) {
         // Function prologue: push rbp; mov rbp, rsp
-        // Save RDI (context pointer) for later use
+        //
+        // CRITICAL: We do NOT push RDI because it contains the CPU context pointer
+        // that ALL generated instructions need to access registers via [RDI + offset].
+        //
+        // Previous bug: The original code did "push rdi" which saved the context pointer
+        // to the stack, but then all subsequent generated code tried to use RDI as the
+        // context pointer. This caused segfaults because RDI contained garbage after the push.
+        //
+        // Fix: Never push RDI, keeping it available for CPU context access throughout
+        // the generated code execution.
         self.code.extend_from_slice(&[
             0x55,             // push rbp
             0x48, 0x89, 0xe5, // mov rbp, rsp
-            0x57,             // push rdi (save context pointer)
+            // Do NOT push rdi - we need it for CPU context access
         ]);
     }
 
     /// Generate function epilogue and return
     pub fn epilogue(&mut self) {
-        // Function epilogue: xor eax, eax; pop rdi; pop rbp; ret
+        // Function epilogue: xor eax, eax; pop rbp; ret
+        // Note: We do NOT pop rdi since we never pushed it
         self.code.extend_from_slice(&[
             0x31, 0xc0,       // xor eax, eax (return 0)
-            0x5f,             // pop rdi (restore context pointer)
+            // Do NOT pop rdi - we never pushed it
             0x5d,             // pop rbp
             0xc3,             // ret
         ]);

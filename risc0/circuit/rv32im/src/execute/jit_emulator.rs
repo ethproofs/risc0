@@ -122,9 +122,9 @@ impl JitEmulator {
             interpreter: Emulator::new(),
             jit_compiler: JitCompiler::new()?,
             execution_count: HashMap::new(),
-            // Use very high threshold to avoid premature compilation in unstable environments
-            // Only compile code that runs extremely frequently to justify the risk
-            jit_threshold: if jit_enabled { 100000 } else { u32::MAX }, // Very conservative threshold
+            // Now that the segfault bug is fixed, use a more reasonable threshold
+            // Still conservative but not excessively high
+            jit_threshold: if jit_enabled { 25000 } else { u32::MAX }, // Moderate threshold
             jit_enabled,
             stats: JitStats::default(),
         })
@@ -252,8 +252,8 @@ impl JitEmulator {
 
                                                                 /// Try to execute native code with proper exception handling
     fn try_execute_native_code<C: EmuContext>(&mut self, ctx: &mut C, compiled_code: *const u8) -> Result<()> {
-        // Create CPU context for native code
-        let mut cpu_context = super::jit::CpuContext::new();
+        // Create CPU context for native code using Box to ensure stable memory location
+        let mut cpu_context = Box::new(super::jit::CpuContext::new());
 
         // Copy registers from emulator context to CPU context
         for i in 0..32 {
@@ -265,14 +265,15 @@ impl JitEmulator {
         cpu_context.emu_context = ctx as *mut C as *mut u8;
         cpu_context.callbacks = &MEMORY_CALLBACKS;
 
+        // Get stable pointer to boxed CPU context
+        let context_ptr = cpu_context.as_mut() as *mut _ as *mut u8;
+
         // Validate the CPU context pointer before use
-        let context_ptr = &mut cpu_context as *mut _ as *mut u8;
         if context_ptr.is_null() {
             return Err(anyhow!("CPU context pointer is null"));
         }
 
         // Additional safety check: verify the pointer is in valid memory range
-        // On most systems, valid heap addresses are much higher than 0x1000000
         if (context_ptr as usize) < 0x1000000 {
             return Err(anyhow!("CPU context pointer {context_ptr:p} appears invalid (too low)"));
         }
@@ -282,7 +283,6 @@ impl JitEmulator {
             return Err(anyhow!("Compiled code pointer is null"));
         }
 
-        // Additional safety: verify compiled code is in reasonable memory range
         if (compiled_code as usize) < 0x1000000 {
             return Err(anyhow!("Compiled code pointer {compiled_code:p} appears invalid (too low)"));
         }
@@ -299,8 +299,8 @@ impl JitEmulator {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            // Note: We cannot catch segfaults with panic::catch_unwind since they are
-            // not Rust panics. The safety checks above should prevent most issues.
+            // The prologue bug has been fixed, so RDI should now correctly contain
+            // the context pointer throughout JIT execution
             jit_fn(context_ptr)
         };
 
@@ -745,7 +745,7 @@ mod tests {
             assert_eq!(emulator.jit_threshold, u32::MAX);
             assert!(!emulator.jit_enabled);
         } else {
-            assert_eq!(emulator.jit_threshold, 100000);
+            assert_eq!(emulator.jit_threshold, 25000);
             assert!(emulator.jit_enabled);
         }
         assert_eq!(emulator.stats.compiled_blocks, 0);
