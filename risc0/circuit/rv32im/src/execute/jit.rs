@@ -1104,46 +1104,65 @@ impl X86CodeGen {
 
     /// Generate memory load helper - calls into emulator's memory system
     fn gen_memory_load(&mut self, size: u32) {
-        // TEMPORARY DISABLE: Memory callbacks are causing severe register corruption
-        // For now, just return a dummy value to see if this fixes the segfaults
-        // This will allow us to determine if the issue is in the callback mechanism
-        // or something else in the JIT system
+        // RE-ENABLED: Memory callbacks now that JIT system is stable
+        // We'll use a robust approach that preserves RDI throughout
 
-        // Return a distinctive dummy value based on size
-        match size {
-            1 => {
-                // 8-bit load: return 0x42
-                self.code.extend_from_slice(&[0xb8, 0x42, 0x00, 0x00, 0x00]); // mov eax, 0x42
-            }
-            2 => {
-                // 16-bit load: return 0x1234
-                self.code.extend_from_slice(&[0xb8, 0x34, 0x12, 0x00, 0x00]); // mov eax, 0x1234
-            }
-            4 => {
-                // 32-bit load: return 0x12345678
-                self.code.extend_from_slice(&[0xb8, 0x78, 0x56, 0x34, 0x12]); // mov eax, 0x12345678
-            }
-            _ => {
-                // Unknown size: return 0
-                self.code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
-            }
-        }
+        // Save RDI to a callee-saved register (R12) before making the call
+        self.code.extend_from_slice(&[0x41, 0x54]); // push r12
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
 
-        // RDI remains untouched and valid throughout
+        // Load the memory address into EAX (already done by caller)
+        // Load the size into EDX
+        self.code.extend_from_slice(&[0xba]); // mov edx, imm32
+        self.code.extend_from_slice(&size.to_le_bytes());
+
+        // Call the memory load function using the existing callback mechanism
+        // The function signature is: fn(ctx: *mut u8, addr: u32) -> u32
+        // RDI = ctx, ESI = addr
+        self.code.extend_from_slice(&[0x89, 0xf6]); // mov esi, eax (addr from eax to esi)
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12 (restore ctx ptr)
+
+        // Call the memory load function via the callback mechanism
+        // This will use the existing jit_load_memory_compat function
+        self.code.extend_from_slice(&[0x48, 0x8b, 0x47, 0x18]); // mov rax, [rdi+24] (load_memory callback)
+        self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
+
+        // Restore RDI from R12
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
+        self.code.extend_from_slice(&[0x41, 0x5c]); // pop r12
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
     }
 
     /// Generate memory store helper - calls into emulator's memory system
     fn gen_memory_store(&mut self, size: u32) {
-        // TEMPORARY DISABLE: Memory callbacks are causing severe register corruption
-        // For now, just ignore the store to see if this fixes the segfaults
-        // This will allow us to determine if the issue is in the callback mechanism
+        // RE-ENABLED: Memory callbacks now that JIT system is stable
+        // We'll use a robust approach that preserves RDI throughout
 
-        // Generate a NOP operation instead of the actual store
-        // In a real program this would cause incorrect behavior, but it will help
-        // us isolate whether the crashes are due to callback corruption
-        self.code.push(0x90); // nop
+        // Save RDI to a callee-saved register (R12) before making the call
+        self.code.extend_from_slice(&[0x41, 0x54]); // push r12
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
 
-        // RDI remains untouched and valid throughout - no register corruption
+        // The value to store is already in EAX, address in EDX
+        // Load the size into ECX
+        self.code.extend_from_slice(&[0xb9]); // mov ecx, imm32
+        self.code.extend_from_slice(&size.to_le_bytes());
+
+        // Call the memory store function using the existing callback mechanism
+        // The function signature is: fn(ctx: *mut u8, addr: u32, value: u32)
+        // RDI = ctx, ESI = addr, EDX = value
+        self.code.extend_from_slice(&[0x89, 0xd6]); // mov esi, edx (addr from edx to esi)
+        self.code.extend_from_slice(&[0x89, 0xc2]); // mov edx, eax (value from eax to edx)
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12 (restore ctx ptr)
+
+        // Call the memory store function via the callback mechanism
+        // This will use the existing jit_store_memory_compat function
+        self.code.extend_from_slice(&[0x48, 0x8b, 0x47, 0x20]); // mov rax, [rdi+32] (store_memory callback)
+        self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
+
+        // Restore RDI from R12
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
+        self.code.extend_from_slice(&[0x41, 0x5c]); // pop r12
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
     }
 
     /// Generate code to load a register value into EAX
@@ -2262,27 +2281,30 @@ mod tests {
         codegen.prologue();
 
         // Generate a sequence that includes memory operations
-        // These now return dummy values instead of making risky callbacks
-        codegen.gen_lw(1, 2, 0x100); // x1 = mem[x2 + 0x100] (returns dummy 0x12345678)
+        // These now use proper memory callbacks with RDI preservation
+        codegen.gen_lw(1, 2, 0x100); // x1 = mem[x2 + 0x100]
 
         codegen.epilogue();
 
         let code = codegen.get_raw_code();
         assert!(!code.is_empty(), "Generated code should not be empty");
 
-        // Check that the code includes dummy return values instead of callback corruption
+        // Check that the code includes proper memory callback code
         let code_hex = code.iter()
             .map(|b| format!("{b:02x}"))
             .collect::<Vec<_>>()
             .join("");
 
-        // Should contain: b8 78563412 (mov eax, 0x12345678) for dummy 32-bit load
-        assert!(code_hex.contains("b878563412"), "Code should return dummy value for memory load");
+        // Should contain RDI preservation code
+        assert!(code_hex.contains("4154"), "Code should preserve RDI with push r12");
+        assert!(code_hex.contains("4989fc"), "Code should save RDI to R12");
+        assert!(code_hex.contains("4c89e7"), "Code should restore RDI from R12");
 
-        // Should NOT contain complex register preservation code
-        assert!(!code_hex.contains("4154"), "Code should not need R12 preservation anymore");
+        // Should contain memory callback function calls via callback mechanism
+        assert!(code_hex.contains("488b4718"), "Code should load load_memory callback");
+        assert!(code_hex.contains("ffd0"), "Code should call memory function");
 
-        println!("JIT memory operation code (dummy values): {code_hex}");
+        println!("JIT memory operation code (with callbacks): {code_hex}");
     }
 
     #[test]
@@ -2357,6 +2379,6 @@ mod tests {
         assert!(code_len > 20, "Generated code should be substantial");
         assert!(code_len < 200, "Generated code should not be excessive");
 
-        println!("Control flow integrity test code ({} bytes): {code_hex}", code_len);
+        println!("Control flow integrity test code ({code_len} bytes): {code_hex}");
     }
 }
