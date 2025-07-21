@@ -118,9 +118,15 @@ impl JitEmulator {
             tracing::info!("JIT compilation disabled for system stability");
         }
 
+        let jit_compiler = JitCompiler::new()?;
+
+        // Clear any cached blocks to ensure fresh compilation
+        let mut compiler = jit_compiler;
+        compiler.clear_cache();
+
         Ok(Self {
             interpreter: Emulator::new(),
-            jit_compiler: JitCompiler::new()?,
+            jit_compiler: compiler,
             execution_count: HashMap::new(),
             // Now that the segfault bug is fixed, use a more reasonable threshold
             // Still conservative but not excessively high
@@ -296,13 +302,13 @@ impl JitEmulator {
 
         // DEBUG: Dump the generated code for analysis
         let code_slice = unsafe {
-            std::slice::from_raw_parts(compiled_code as *const u8, 64) // First 64 bytes
+            std::slice::from_raw_parts(compiled_code, 64) // First 64 bytes
         };
         let code_hex: String = code_slice.iter()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<Vec<_>>()
             .join(" ");
-        tracing::debug!("Generated x86-64 code (first 64 bytes): {}", code_hex);
+        tracing::debug!("Generated x86-64 code (first 64 bytes): {code_hex}");
 
         // Cast the compiled code to a function pointer and execute it
         let result = unsafe {
@@ -461,6 +467,12 @@ impl JitEmulator {
                 Ok(())
             }
         }
+    }
+
+    /// Clear the JIT cache to force recompilation
+    pub fn clear_jit_cache(&mut self) {
+        self.jit_compiler.clear_cache();
+        tracing::debug!("JIT cache cleared in emulator");
     }
 
     /// Get the size of the current basic block (for demonstration)
