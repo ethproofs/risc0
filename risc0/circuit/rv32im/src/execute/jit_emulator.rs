@@ -45,6 +45,7 @@ impl JitRegContext {
 }
 
 /// Simple JIT-enabled emulator that directly translates RISC-V to x86-64
+#[allow(dead_code)]
 pub struct JitEmulator {
     /// Fallback interpreter
     interpreter: Emulator,
