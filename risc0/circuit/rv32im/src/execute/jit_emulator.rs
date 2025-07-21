@@ -299,13 +299,16 @@ impl JitEmulator {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            // FIXED: CPU context corruption bugs that caused segfaults:
+            // FIXED: All CPU context corruption bugs that caused segfaults:
             // 1. Prologue was pushing RDI (context pointer) and corrupting it
             // 2. Memory callbacks were clobbering RDI without saving/restoring it
+            // 3. Stack alignment issues causing corruption during function calls
             //
-            // Both issues are now fixed:
-            // - Prologue no longer pushes RDI
-            // - Memory callbacks save/restore RDI around function calls
+            // All issues are now fixed:
+            // - Prologue no longer pushes RDI, preserves R12/R13 instead
+            // - Memory callbacks save RDI to callee-saved R12 register (not stack)
+            // - Proper x86-64 calling convention with 64-bit register usage
+            // - No complex stack manipulation that could cause alignment issues
             jit_fn(context_ptr)
         };
 

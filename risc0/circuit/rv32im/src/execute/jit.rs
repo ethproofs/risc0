@@ -171,20 +171,25 @@ impl X86CodeGen {
         //
         // Fix: Never push RDI, keeping it available for CPU context access throughout
         // the generated code execution.
+        //
+        // However, we DO need to save R12 and R13 since we use them for temporary storage
+        // during memory operations.
         self.code.extend_from_slice(&[
             0x55,             // push rbp
             0x48, 0x89, 0xe5, // mov rbp, rsp
-            // Do NOT push rdi - we need it for CPU context access
+            0x41, 0x54,       // push r12 (we use this for saving RDI during callbacks)
+            0x41, 0x55,       // push r13 (we use this for saving values during callbacks)
         ]);
     }
 
     /// Generate function epilogue and return
     pub fn epilogue(&mut self) {
-        // Function epilogue: xor eax, eax; pop rbp; ret
+        // Function epilogue: restore callee-saved registers, xor eax, pop rbp, ret
         // Note: We do NOT pop rdi since we never pushed it
         self.code.extend_from_slice(&[
             0x31, 0xc0,       // xor eax, eax (return 0)
-            // Do NOT pop rdi - we never pushed it
+            0x41, 0x5d,       // pop r13 (restore callee-saved register)
+            0x41, 0x5c,       // pop r12 (restore callee-saved register)
             0x5d,             // pop rbp
             0xc3,             // ret
         ]);
@@ -1098,35 +1103,29 @@ impl X86CodeGen {
         // Generate a call to the memory load callback
         // Arguments: RDI (context), RSI (address), RDX (size)
         //
-        // CRITICAL: We must preserve RDI (CPU context pointer) across the function call
-        // because x86-64 calling convention allows callees to clobber caller-saved registers
+        // CRITICAL: Preserve RDI (CPU context pointer) by using a callee-saved register
 
-        // Save RDI (CPU context pointer) - this is essential!
-        self.code.extend_from_slice(&[0x57]); // push rdi
+        // Save RDI (CPU context pointer) to R12 (callee-saved, won't be clobbered)
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
 
-        // Save EAX (address) to stack
-        self.code.push(0x50); // push rax
+        // Set up arguments for jit_load_memory_full(cpu_ctx: *mut u8, addr: u32, size: u32)
+        // RDI (first arg) = CPU context pointer (already in RDI)
+        // RSI (second arg) = address (currently in EAX)
+        self.code.extend_from_slice(&[0x48, 0x89, 0xc6]); // mov rsi, rax
 
-        // Move size to EDX (third argument)
-        self.code.extend_from_slice(&[0xba]); // mov edx, imm32
+        // RDX (third arg) = size
+        self.code.extend_from_slice(&[0x48, 0xc7, 0xc2]); // mov rdx, imm32
         self.code.extend_from_slice(&size.to_le_bytes());
 
-        // Move address to RSI (second argument)
-        self.code.extend_from_slice(&[0x58]); // pop rax
-        self.code.extend_from_slice(&[0x89, 0xc6]); // mov esi, eax
-
-        // RDI already contains context pointer (first argument)
-
         // Call the memory load function
-        // MOV RAX, function_address; CALL RAX
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
         self.code.extend_from_slice(&(jit_load_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
 
-        // Restore RDI (CPU context pointer) - this was the missing piece!
-        self.code.extend_from_slice(&[0x5f]); // pop rdi
+        // Restore RDI (CPU context pointer) from R12
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
 
-        // Result is now in EAX, and RDI is restored
+        // Result is now in EAX, and RDI is properly restored
     }
 
     /// Generate memory store helper - calls into emulator's memory system
@@ -1134,35 +1133,33 @@ impl X86CodeGen {
         // Generate a call to the memory store callback
         // Arguments: RDI (context), RSI (address), RDX (value), RCX (size)
         //
-        // CRITICAL: We must preserve RDI (CPU context pointer) across the function call
-        // because x86-64 calling convention allows callees to clobber caller-saved registers
+        // CRITICAL: Preserve RDI (CPU context pointer) by using a callee-saved register
 
-        // Save RDI (CPU context pointer) - this is essential!
-        self.code.extend_from_slice(&[0x57]); // push rdi
+        // Save RDI (CPU context pointer) to R12 (callee-saved, won't be clobbered)
+        self.code.extend_from_slice(&[0x49, 0x89, 0xfc]); // mov r12, rdi
 
-        // Save registers to stack
-        self.code.push(0x50); // push rax (address)
-        self.code.push(0x52); // push rdx (value)
+        // Save value (EDX) to R13 (another callee-saved register)
+        self.code.extend_from_slice(&[0x49, 0x89, 0xd5]); // mov r13, rdx
 
-        // Move size to RCX (fourth argument)
-        self.code.extend_from_slice(&[0xb9]); // mov ecx, imm32
+        // Set up arguments for jit_store_memory_full(cpu_ctx: *mut u8, addr: u32, value: u32, size: u32)
+        // RDI (first arg) = CPU context pointer (already in RDI)
+        // RSI (second arg) = address (currently in EAX)
+        self.code.extend_from_slice(&[0x48, 0x89, 0xc6]); // mov rsi, rax
+
+        // RDX (third arg) = value (restore from R13)
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xea]); // mov rdx, r13
+
+        // RCX (fourth arg) = size
+        self.code.extend_from_slice(&[0x48, 0xc7, 0xc1]); // mov rcx, imm32
         self.code.extend_from_slice(&size.to_le_bytes());
-
-        // Pop value to RDX (third argument)
-        self.code.extend_from_slice(&[0x5a]); // pop rdx
-
-        // Pop address to RSI (second argument)
-        self.code.extend_from_slice(&[0x5e]); // pop rsi
-
-        // RDI already contains context pointer (first argument)
 
         // Call the memory store function
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
         self.code.extend_from_slice(&(jit_store_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
 
-        // Restore RDI (CPU context pointer) - this was the missing piece!
-        self.code.extend_from_slice(&[0x5f]); // pop rdi
+        // Restore RDI (CPU context pointer) from R12
+        self.code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi, r12
     }
 
     /// Generate code to load a register value into EAX
@@ -2293,14 +2290,14 @@ mod tests {
 
         // Check that the code includes the RDI save/restore pattern
         let code_hex = code.iter()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<Vec<_>>()
             .join("");
 
-        // Should contain: 57 (push rdi) and later 5f (pop rdi)
-        assert!(code_hex.contains("57"), "Code should save RDI before callback");
-        assert!(code_hex.contains("5f"), "Code should restore RDI after callback");
+        // Should contain: 4154 (push r12) and 415c (pop r12) for register preservation
+        assert!(code_hex.contains("4154"), "Code should save R12 for RDI preservation");
+        assert!(code_hex.contains("415c"), "Code should restore R12 after RDI preservation");
 
-        println!("JIT memory operation code: {}", code_hex);
+        println!("JIT memory operation code: {code_hex}");
     }
 }
