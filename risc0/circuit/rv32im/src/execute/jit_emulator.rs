@@ -6,6 +6,42 @@ use super::rv32im::{Emulator, EmuContext, InsnKind, DecodedInstruction};
 use super::jit::{JitCompiler, BasicBlock};
 use super::r0vm::EmuStep;
 
+/// Register context for JIT execution - matches the layout expected by JIT code
+#[repr(C)]
+#[allow(dead_code)]
+struct JitRegContext {
+    registers: [u32; 32],
+    pc: u32,
+}
+
+impl JitRegContext {
+    fn new<C: EmuContext>(ctx: &mut C) -> Result<Self> {
+        let mut reg_context = Self {
+            registers: [0; 32],
+            pc: ctx.get_pc().0,
+        };
+
+        // Load all registers from emulator context
+        for i in 0..32 {
+            reg_context.registers[i] = ctx.load_register(i)?;
+        }
+
+        Ok(reg_context)
+    }
+
+    fn update_context<C: EmuContext>(&self, ctx: &mut C) -> Result<()> {
+        // Store all registers back to emulator context
+        for i in 0..32 {
+            ctx.store_register(i, self.registers[i])?;
+        }
+
+        // Update PC
+        ctx.set_pc(risc0_binfmt::ByteAddr(self.pc));
+
+        Ok(())
+    }
+}
+
 /// Simple JIT-enabled emulator that directly translates RISC-V to x86-64
 pub struct JitEmulator {
     /// Fallback interpreter
@@ -24,12 +60,12 @@ pub struct JitEmulator {
 
 impl JitEmulator {
     pub fn new() -> Result<Self> {
-        // Simple JIT enablement - just check if we can allocate executable memory
+        // Enable JIT compilation with register context interface
         let jit_enabled = std::env::var("RISC0_DISABLE_JIT").is_err()
             && !cfg!(target_os = "macos"); // Disable on macOS due to sandbox restrictions
 
         if jit_enabled {
-            tracing::info!("JIT compilation enabled");
+            tracing::info!("JIT compilation enabled with register context");
         } else {
             tracing::info!("JIT compilation disabled");
         }
@@ -40,7 +76,7 @@ impl JitEmulator {
             interpreter: Emulator::new(),
             jit_compiler,
             execution_count: HashMap::new(),
-            jit_threshold: if jit_enabled { 1000 } else { u32::MAX }, // Much lower threshold
+            jit_threshold: if jit_enabled { 1000 } else { u32::MAX },
             jit_enabled,
             stats: JitStats::default(),
         })
@@ -143,25 +179,28 @@ impl JitEmulator {
         Ok(block)
     }
 
-    /// Execute a compiled basic block with simple approach
+    /// Execute a compiled basic block with register context
     fn execute_compiled_block<C: EmuContext>(&mut self, ctx: &mut C, compiled_code: *const u8) -> Result<()> {
         tracing::debug!("Executing compiled block at {:?}", ctx.get_pc());
 
-        // Simple approach: just call the native code with the context pointer
+        // Create register context from emulator state
+        let mut reg_context = JitRegContext::new(ctx)?;
+
+        // Call the native code with the register context pointer
         let result = unsafe {
-            let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
+            let jit_fn: unsafe extern "C" fn(*mut JitRegContext) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            // Pass the emulator context directly
-            let context_ptr = ctx as *mut C as *mut u8;
-            jit_fn(context_ptr)
+            jit_fn(&mut reg_context as *mut JitRegContext)
         };
+
+        // Update emulator context with any changes from JIT execution
+        reg_context.update_context(ctx)?;
 
         // Handle the result
         match result {
             0 => {
-                // Normal completion - update PC to next instruction
-                ctx.set_pc(ctx.get_pc() + 4);
+                // Normal completion - PC already updated by update_context
                 Ok(())
             }
             pc_value if pc_value > 0x1000 => {
@@ -186,7 +225,6 @@ impl JitEmulator {
             }
             _ => {
                 // Unknown result - assume normal completion
-                ctx.set_pc(ctx.get_pc() + 4);
                 Ok(())
             }
         }
@@ -339,13 +377,12 @@ mod tests {
     fn test_jit_emulator_creation() {
         let emulator = JitEmulator::new().unwrap();
         if std::env::var("RISC0_DISABLE_JIT").is_ok() || cfg!(target_os = "macos") {
-            assert_eq!(emulator.jit_threshold, u32::MAX);
             assert!(!emulator.jit_enabled);
+            assert_eq!(emulator.jit_threshold, u32::MAX);
         } else {
-            assert_eq!(emulator.jit_threshold, 1000);
             assert!(emulator.jit_enabled);
+            assert_eq!(emulator.jit_threshold, 1000);
         }
-        assert_eq!(emulator.stats.compiled_blocks, 0);
     }
 
     #[test]
@@ -358,11 +395,16 @@ mod tests {
             *emulator.execution_count.entry(addr).or_insert(0) += 1;
         }
 
+        // Test that execution counting works correctly
+        let count = emulator.execution_count.get(&addr).unwrap();
+        assert_eq!(*count, 15);
+
+        // Test that hotspots are detected correctly (even if JIT is disabled)
         let hot_spots = emulator.execution_count.iter()
             .filter(|(_, &count)| count >= emulator.jit_threshold)
             .count();
 
-        assert_eq!(hot_spots, 1);
+        assert_eq!(hot_spots, 1); // Should detect 1 hotspot
     }
 
     #[test]

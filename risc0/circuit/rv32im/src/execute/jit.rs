@@ -471,7 +471,8 @@ impl X86CodeGen {
             // x0 is always zero
             self.code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
         } else {
-            // Load from emulator context: MOV EAX, [RDI + reg*4]
+            // Load from register context: MOV EAX, [RDI + reg*4]
+            // RDI points to JitRegContext.registers array
             let offset = reg * 4;
             if offset < 128 {
                 self.code.extend_from_slice(&[0x8b, 0x47]); // mov eax, [rdi + disp8]
@@ -489,7 +490,7 @@ impl X86CodeGen {
             // x0 is always zero
             self.code.extend_from_slice(&[0x31, 0xc9]); // xor ecx, ecx
         } else {
-            // Load from emulator context: MOV ECX, [RDI + reg*4]
+            // Load from register context: MOV ECX, [RDI + reg*4]
             let offset = reg * 4;
             if offset < 128 {
                 self.code.extend_from_slice(&[0x8b, 0x4f]); // mov ecx, [rdi + disp8]
@@ -503,11 +504,8 @@ impl X86CodeGen {
 
     /// Store EAX value to register
     fn gen_store_register(&mut self, reg: u32) {
-        if reg == 0 {
-            // x0 is hardwired to zero - ignore writes
-            self.code.push(0x90); // nop
-        } else {
-            // Store to emulator context: MOV [RDI + reg*4], EAX
+        if reg != 0 {
+            // Store to register context: MOV [RDI + reg*4], EAX
             let offset = reg * 4;
             if offset < 128 {
                 self.code.extend_from_slice(&[0x89, 0x47]); // mov [rdi + disp8], eax
