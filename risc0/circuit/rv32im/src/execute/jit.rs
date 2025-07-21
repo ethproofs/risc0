@@ -465,6 +465,143 @@ impl X86CodeGen {
         self.code.extend_from_slice(&[0xc3]); // ret
     }
 
+    /// Generate LW instruction (load word)
+    pub fn gen_lw(&mut self, rd: u32, rs1: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Load word from memory: MOV EAX, [EAX]
+        self.code.extend_from_slice(&[0x8b, 0x00]); // mov eax, [eax]
+
+        // Store result to rd
+        self.gen_store_register(rd);
+    }
+
+    /// Generate SW instruction (store word)
+    pub fn gen_sw(&mut self, rs1: u32, rs2: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Store address in ECX
+        self.code.extend_from_slice(&[0x89, 0xc1]); // mov ecx, eax
+
+        // Load value to store (rs2) into EAX
+        self.gen_load_register(rs2);
+
+        // Store word to memory: MOV [ECX], EAX
+        self.code.extend_from_slice(&[0x89, 0x01]); // mov [ecx], eax
+    }
+
+    /// Generate LH instruction (load halfword)
+    pub fn gen_lh(&mut self, rd: u32, rs1: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Load halfword from memory: MOVSX EAX, WORD PTR [EAX]
+        self.code.extend_from_slice(&[0x0f, 0xbf, 0x00]); // movsx eax, word ptr [eax]
+
+        // Store result to rd
+        self.gen_store_register(rd);
+    }
+
+    /// Generate LH instruction (load halfword unsigned)
+    pub fn gen_lhu(&mut self, rd: u32, rs1: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Load halfword from memory: MOVZX EAX, WORD PTR [EAX]
+        self.code.extend_from_slice(&[0x0f, 0xb7, 0x00]); // movzx eax, word ptr [eax]
+
+        // Store result to rd
+        self.gen_store_register(rd);
+    }
+
+    /// Generate LB instruction (load byte)
+    pub fn gen_lb(&mut self, rd: u32, rs1: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Load byte from memory: MOVSX EAX, BYTE PTR [EAX]
+        self.code.extend_from_slice(&[0x0f, 0xbe, 0x00]); // movsx eax, byte ptr [eax]
+
+        // Store result to rd
+        self.gen_store_register(rd);
+    }
+
+    /// Generate LB instruction (load byte unsigned)
+    pub fn gen_lbu(&mut self, rd: u32, rs1: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Load byte from memory: MOVZX EAX, BYTE PTR [EAX]
+        self.code.extend_from_slice(&[0x0f, 0xb6, 0x00]); // movzx eax, byte ptr [eax]
+
+        // Store result to rd
+        self.gen_store_register(rd);
+    }
+
+    /// Generate SH instruction (store halfword)
+    pub fn gen_sh(&mut self, rs1: u32, rs2: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Store address in ECX
+        self.code.extend_from_slice(&[0x89, 0xc1]); // mov ecx, eax
+
+        // Load value to store (rs2) into EAX
+        self.gen_load_register(rs2);
+
+        // Store halfword to memory: MOV [ECX], AX
+        self.code.extend_from_slice(&[0x66, 0x89, 0x01]); // mov [ecx], ax
+    }
+
+    /// Generate SB instruction (store byte)
+    pub fn gen_sb(&mut self, rs1: u32, rs2: u32, imm: i32) {
+        // Load base address (rs1) into EAX
+        self.gen_load_register(rs1);
+
+        // Add immediate offset
+        self.code.extend_from_slice(&[0x05]); // add eax, imm32
+        self.code.extend_from_slice(&imm.to_le_bytes());
+
+        // Store address in ECX
+        self.code.extend_from_slice(&[0x89, 0xc1]); // mov ecx, eax
+
+        // Load value to store (rs2) into EAX
+        self.gen_load_register(rs2);
+
+        // Store byte to memory: MOV [ECX], AL
+        self.code.extend_from_slice(&[0x88, 0x01]); // mov [ecx], al
+    }
+
     /// Load register value into EAX
     fn gen_load_register(&mut self, reg: u32) {
         if reg == 0 {
@@ -597,14 +734,10 @@ impl JitCompiler {
                     codegen.gen_xor(decoded.rd, decoded.rs1, decoded.rs2);
                 }
                 InsnKind::Lw => {
-                    // Memory operations should fall back to interpreter
-                    // JIT code doesn't have access to emulator's memory system
-                    continue;
+                    codegen.gen_lw(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
                 }
                 InsnKind::Sw => {
-                    // Memory operations should fall back to interpreter
-                    // JIT code doesn't have access to emulator's memory system
-                    continue;
+                    codegen.gen_sw(decoded.rs1, decoded.rs2, decoded.imm_i() as i32);
                 }
                 InsnKind::Sll => {
                     codegen.gen_sll(decoded.rd, decoded.rs1, decoded.rs2);
@@ -681,6 +814,24 @@ impl JitCompiler {
                 }
                 InsnKind::Mret => {
                     codegen.gen_mret();
+                }
+                InsnKind::Lh => {
+                    codegen.gen_lh(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
+                }
+                InsnKind::LhU => {
+                    codegen.gen_lhu(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
+                }
+                InsnKind::Lb => {
+                    codegen.gen_lb(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
+                }
+                InsnKind::LbU => {
+                    codegen.gen_lbu(decoded.rd, decoded.rs1, decoded.imm_i() as i32);
+                }
+                InsnKind::Sh => {
+                    codegen.gen_sh(decoded.rs1, decoded.rs2, decoded.imm_i() as i32);
+                }
+                InsnKind::Sb => {
+                    codegen.gen_sb(decoded.rs1, decoded.rs2, decoded.imm_i() as i32);
                 }
                 _ => {
                     // For unsupported instructions, just continue

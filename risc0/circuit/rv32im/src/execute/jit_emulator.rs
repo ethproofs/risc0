@@ -79,7 +79,7 @@ impl JitEmulator {
             interpreter: Emulator::new(),
             jit_compiler,
             execution_count: HashMap::new(),
-            jit_threshold: if jit_enabled { 10 } else { u32::MAX }, // Lower threshold for testing
+            jit_threshold: if jit_enabled { 5 } else { u32::MAX },
             jit_enabled,
             stats: JitStats::default(),
         })
@@ -149,7 +149,7 @@ impl JitEmulator {
         let mut current_addr = start_addr;
 
         // Collect instructions until we hit a control flow instruction
-        for _ in 0..16 { // Limit basic block size
+        for _ in 0..32 { // Increased from 16 to 32 for larger blocks
             if !ctx.check_insn_load(current_addr) {
                 break;
             }
@@ -158,12 +158,7 @@ impl JitEmulator {
             let decoded = DecodedInstruction::new(word);
             let kind = Self::decode_instruction_kind(&decoded);
 
-            // Skip memory operations - they cause segfaults in JIT
-            if matches!(kind, InsnKind::Lw | InsnKind::Sw | InsnKind::Lh | InsnKind::LhU |
-                              InsnKind::Lb | InsnKind::LbU | InsnKind::Sh | InsnKind::Sb) {
-                break;
-            }
-
+            // Allow all instructions including memory operations
             block.instructions.push((kind, decoded));
             block.end_addr = current_addr;
 
