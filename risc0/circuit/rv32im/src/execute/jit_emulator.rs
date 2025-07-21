@@ -78,7 +78,7 @@ impl JitEmulator {
             interpreter: Emulator::new(),
             jit_compiler,
             execution_count: HashMap::new(),
-            jit_threshold: if jit_enabled { 1000 } else { u32::MAX },
+            jit_threshold: if jit_enabled { 10 } else { u32::MAX }, // Lower threshold for testing
             jit_enabled,
             stats: JitStats::default(),
         })
@@ -395,7 +395,7 @@ mod tests {
             assert_eq!(emulator.jit_threshold, u32::MAX);
         } else {
             assert!(emulator.jit_enabled);
-            assert_eq!(emulator.jit_threshold, 1000);
+            assert_eq!(emulator.jit_threshold, 10);
         }
     }
 
