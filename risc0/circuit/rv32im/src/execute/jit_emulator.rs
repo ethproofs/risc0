@@ -299,8 +299,13 @@ impl JitEmulator {
             let jit_fn: unsafe extern "C" fn(*mut u8) -> i32 =
                 std::mem::transmute(compiled_code);
 
-            // The prologue bug has been fixed, so RDI should now correctly contain
-            // the context pointer throughout JIT execution
+            // FIXED: CPU context corruption bugs that caused segfaults:
+            // 1. Prologue was pushing RDI (context pointer) and corrupting it
+            // 2. Memory callbacks were clobbering RDI without saving/restoring it
+            //
+            // Both issues are now fixed:
+            // - Prologue no longer pushes RDI
+            // - Memory callbacks save/restore RDI around function calls
             jit_fn(context_ptr)
         };
 

@@ -1096,35 +1096,49 @@ impl X86CodeGen {
     /// Generate memory load helper - calls into emulator's memory system
     fn gen_memory_load(&mut self, size: u32) {
         // Generate a call to the memory load callback
-        // Arguments: RDI (context), EAX (address), EDX (size)
+        // Arguments: RDI (context), RSI (address), RDX (size)
+        //
+        // CRITICAL: We must preserve RDI (CPU context pointer) across the function call
+        // because x86-64 calling convention allows callees to clobber caller-saved registers
+
+        // Save RDI (CPU context pointer) - this is essential!
+        self.code.extend_from_slice(&[0x57]); // push rdi
 
         // Save EAX (address) to stack
         self.code.push(0x50); // push rax
 
-        // Move size to EDX
+        // Move size to EDX (third argument)
         self.code.extend_from_slice(&[0xba]); // mov edx, imm32
         self.code.extend_from_slice(&size.to_le_bytes());
 
-        // Move address back to RSI (second argument)
+        // Move address to RSI (second argument)
         self.code.extend_from_slice(&[0x58]); // pop rax
         self.code.extend_from_slice(&[0x89, 0xc6]); // mov esi, eax
 
         // RDI already contains context pointer (first argument)
 
         // Call the memory load function
-        // We'll use a direct call to an external function
         // MOV RAX, function_address; CALL RAX
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
         self.code.extend_from_slice(&(jit_load_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
 
-        // Result is now in EAX
+        // Restore RDI (CPU context pointer) - this was the missing piece!
+        self.code.extend_from_slice(&[0x5f]); // pop rdi
+
+        // Result is now in EAX, and RDI is restored
     }
 
     /// Generate memory store helper - calls into emulator's memory system
     fn gen_memory_store(&mut self, size: u32) {
         // Generate a call to the memory store callback
-        // Arguments: RDI (context), EAX (address), EDX (value), ECX (size)
+        // Arguments: RDI (context), RSI (address), RDX (value), RCX (size)
+        //
+        // CRITICAL: We must preserve RDI (CPU context pointer) across the function call
+        // because x86-64 calling convention allows callees to clobber caller-saved registers
+
+        // Save RDI (CPU context pointer) - this is essential!
+        self.code.extend_from_slice(&[0x57]); // push rdi
 
         // Save registers to stack
         self.code.push(0x50); // push rax (address)
@@ -1146,6 +1160,9 @@ impl X86CodeGen {
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
         self.code.extend_from_slice(&(jit_store_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
+
+        // Restore RDI (CPU context pointer) - this was the missing piece!
+        self.code.extend_from_slice(&[0x5f]); // pop rdi
     }
 
     /// Generate code to load a register value into EAX
@@ -2255,5 +2272,35 @@ mod tests {
 
         // The generated code should be different (different offsets)
         assert_ne!(code1, code2, "Different RISC-V registers should generate different x86 code");
+    }
+
+    #[test]
+    fn test_jit_preserves_context_pointer() {
+        let mut codegen = X86CodeGen::new();
+
+        codegen.prologue();
+
+        // Generate a sequence that would have failed before the fix:
+        // 1. Load from a register (uses RDI)
+        // 2. Perform memory load (calls callback that could clobber RDI)
+        // 3. Store to a register (uses RDI again)
+        codegen.gen_lw(1, 2, 0x100); // x1 = mem[x2 + 0x100]
+
+        codegen.epilogue();
+
+        let code = codegen.get_raw_code();
+        assert!(!code.is_empty(), "Generated code should not be empty");
+
+        // Check that the code includes the RDI save/restore pattern
+        let code_hex = code.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Should contain: 57 (push rdi) and later 5f (pop rdi)
+        assert!(code_hex.contains("57"), "Code should save RDI before callback");
+        assert!(code_hex.contains("5f"), "Code should restore RDI after callback");
+
+        println!("JIT memory operation code: {}", code_hex);
     }
 }
