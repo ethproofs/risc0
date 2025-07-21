@@ -1105,7 +1105,7 @@ impl X86CodeGen {
         // We'll use a direct call to an external function
         // MOV RAX, function_address; CALL RAX
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
-        self.code.extend_from_slice(&(crate::execute::jit::jit_load_memory as *const () as u64).to_le_bytes());
+        self.code.extend_from_slice(&(jit_load_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
 
         // Result is now in EAX
@@ -1134,7 +1134,7 @@ impl X86CodeGen {
 
         // Call the memory store function
         self.code.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
-        self.code.extend_from_slice(&(crate::execute::jit::jit_store_memory as *const () as u64).to_le_bytes());
+        self.code.extend_from_slice(&(jit_store_memory_full as *const () as u64).to_le_bytes());
         self.code.extend_from_slice(&[0xff, 0xd0]); // call rax
     }
 
@@ -1755,12 +1755,51 @@ pub mod jit_return_codes {
     pub const MRET: i32 = 48;            // Machine return
 }
 
-// JIT memory callback functions
+// JIT memory callback functions - compatible with MemoryCallbacks struct
 #[no_mangle]
-/// Memory load callback for JIT-compiled code
+/// Register load callback for JIT-compiled code
 /// # Safety
 /// This function is called from JIT-compiled native code with raw pointers
-pub unsafe extern "C" fn jit_load_memory(cpu_ctx: *mut u8, addr: u32, size: u32) -> u32 {
+pub unsafe extern "C" fn jit_load_register(_ctx: *mut u8, reg: u32) -> u32 {
+    if reg == 0 {
+        0 // x0 is hardwired to zero
+    } else {
+        // Return dummy value for now - real implementation would use thread-local context
+        0x87654321
+    }
+}
+
+#[no_mangle]
+/// Register store callback for JIT-compiled code
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_store_register(_ctx: *mut u8, _reg: u32, _value: u32) {
+    // No-op for now - real implementation would use thread-local context
+}
+
+#[no_mangle]
+/// Memory load callback for JIT-compiled code (compatible signature)
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_load_memory_compat(_ctx: *mut u8, addr: u32) -> u32 {
+    // Call the full function with default word size
+    jit_load_memory_full(_ctx, addr, 4)
+}
+
+#[no_mangle]
+/// Memory store callback for JIT-compiled code (compatible signature)
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_store_memory_compat(_ctx: *mut u8, addr: u32, value: u32) {
+    // Call the full function with default word size
+    jit_store_memory_full(_ctx, addr, value, 4);
+}
+
+#[no_mangle]
+/// Memory load callback for JIT-compiled code (full signature)
+/// # Safety
+/// This function is called from JIT-compiled native code with raw pointers
+pub unsafe extern "C" fn jit_load_memory_full(cpu_ctx: *mut u8, addr: u32, size: u32) -> u32 {
     // Cast back to CPU context
     let cpu_context = &*(cpu_ctx as *const CpuContext);
 
@@ -1814,10 +1853,10 @@ pub unsafe extern "C" fn jit_load_memory(cpu_ctx: *mut u8, addr: u32, size: u32)
 }
 
 #[no_mangle]
-/// Memory store callback for JIT-compiled code
+/// Memory store callback for JIT-compiled code (full signature)
 /// # Safety
 /// This function is called from JIT-compiled native code with raw pointers
-pub unsafe extern "C" fn jit_store_memory(cpu_ctx: *mut u8, addr: u32, value: u32, size: u32) {
+pub unsafe extern "C" fn jit_store_memory_full(cpu_ctx: *mut u8, addr: u32, value: u32, size: u32) {
     // Cast back to CPU context
     let cpu_context = &*(cpu_ctx as *const CpuContext);
 
@@ -2098,10 +2137,10 @@ mod tests {
     fn test_jit_memory_callbacks() {
         // Test that callback function pointers are valid
         let callbacks = MemoryCallbacks {
-            load_memory: super::jit_load_memory,
-            store_memory: super::jit_store_memory,
-            load_register: super::jit_load_memory, // Use public function instead
-            store_register: super::jit_store_memory, // Use public function instead
+            load_memory: jit_load_memory_compat,
+            store_memory: jit_store_memory_compat,
+            load_register: jit_load_register,
+            store_register: jit_store_register,
         };
 
         // Verify callback addresses are non-null

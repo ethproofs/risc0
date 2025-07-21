@@ -416,49 +416,7 @@ impl EmuStep for AdaptiveJitEmulator {
 }
 
 // JIT callback functions for native code to interact with emulator
-#[allow(dead_code)]
-#[no_mangle]
-/// # Safety
-/// This function is intended to be called from JIT-compiled native code.
-/// The context pointer must be valid and point to a properly initialized EmuContext.
-pub unsafe extern "C" fn jit_load_register(_ctx: *mut u8, _reg: u32) -> u32 {
-    // In a real implementation, we'd need to properly cast the context
-    // For now, return a dummy value
-    // This would require careful design of the calling convention
-    0
-}
-
-#[allow(dead_code)]
-#[no_mangle]
-/// # Safety
-/// This function is intended to be called from JIT-compiled native code.
-/// The context pointer must be valid and point to a properly initialized EmuContext.
-pub unsafe extern "C" fn jit_store_register(_ctx: *mut u8, _reg: u32, _value: u32) {
-    // In a real implementation, we'd need to properly cast the context
-    // and store the register value
-    // This would require careful design of the calling convention
-}
-
-#[allow(dead_code)]
-#[no_mangle]
-/// # Safety
-/// This function is intended to be called from JIT-compiled native code.
-/// The context pointer must be valid and point to a properly initialized EmuContext.
-pub unsafe extern "C" fn jit_load_memory(_ctx: *mut u8, _addr: u32) -> u32 {
-    // In a real implementation, we'd need to properly cast the context
-    // and load from memory
-    0
-}
-
-#[allow(dead_code)]
-#[no_mangle]
-/// # Safety
-/// This function is intended to be called from JIT-compiled native code.
-/// The context pointer must be valid and point to a properly initialized EmuContext.
-pub unsafe extern "C" fn jit_store_memory(_ctx: *mut u8, _addr: u32, _value: u32) {
-    // In a real implementation, we'd need to properly cast the context
-    // and store to memory
-}
+// JIT callback functions are now defined in jit.rs to avoid symbol conflicts
 
 // Thread-local storage for the active emulator context
 thread_local! {
