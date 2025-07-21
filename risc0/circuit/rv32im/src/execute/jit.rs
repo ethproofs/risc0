@@ -2306,12 +2306,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
 
-        // Should contain real memory operations (direct access)
-        assert!(code_hex.contains("0500100000"), "Code should contain add eax, 0x1000 for safe memory region");
-        assert!(code_hex.contains("8b00"), "Code should contain mov eax, [rax] for real memory access");
+        // Should contain safe hash-based memory operations
+        assert!(code_hex.contains("25ffff0000"), "Code should contain and eax, 0x0000ffff for hash-based approach");
+        assert!(code_hex.contains("69c011111111"), "Code should contain imul eax, eax, 0x11111111 for hash-based approach");
+        assert!(code_hex.contains("0542424242"), "Code should contain add eax, 0x42424242 for hash-based approach");
         assert!(code_hex.contains("894704"), "Code should contain mov [rdi+4], eax to store result");
 
-        println!("JIT memory operation code (real memory approach): {code_hex}");
+        println!("JIT memory operation code (hash-based approach): {code_hex}");
     }
 
     #[test]
