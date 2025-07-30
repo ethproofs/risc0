@@ -98,12 +98,21 @@ pub(crate) trait Risc0Context {
 
     #[inline(always)]
     fn load_region(&mut self, op: LoadOp, addr: ByteAddr, size: usize) -> Result<Vec<u8>> {
-        let mut region = Vec::with_capacity(size);
+        let mut region = Vec::with_capacity(size); // Avoid initialization cost
+        let mut pos = 0;
+
         if addr.is_aligned() && (0 == size % WORD_SIZE) {
             let mut waddr = addr.waddr();
-            for _ in (0..size).step_by(WORD_SIZE) {
+            while pos < size {
                 let word = self.load_u32(op, waddr.postfix_inc())?;
-                region.extend_from_slice(&word.to_le_bytes());
+                let bytes = word.to_le_bytes();
+
+                // Direct array access - more efficient than extend_from_slice
+                region.push(bytes[0]);
+                region.push(bytes[1]);
+                region.push(bytes[2]);
+                region.push(bytes[3]);
+                pos += 4;
             }
         } else {
             for i in 0..size {
@@ -117,20 +126,32 @@ pub(crate) trait Risc0Context {
 
     #[inline(always)]
     fn store_region(&mut self, addr: ByteAddr, input: &[u8]) -> Result<()> {
-        let size = input.len();
-        if addr.is_aligned() && (0 == size % WORD_SIZE) {
-            let mut waddr = addr.waddr();
-            for i in (0..size).step_by(WORD_SIZE) {
-                self.store_u32(
-                    waddr.postfix_inc(),
-                    u32::from_le_bytes(input[i..(i + WORD_SIZE)].try_into().unwrap()),
-                )?;
-            }
-        } else {
-            for (i, byte) in input.iter().enumerate() {
-                self.store_u8(addr + i, *byte)?;
-            }
+        let start = addr.0 as usize;
+        let mut pos = 0;
+
+        // Handle any unaligned start
+        while pos < input.len() && (start + pos) & 3 != 0 {
+            self.store_u8(addr + pos, input[pos])?;
+            pos += 1;
         }
+
+        // Bulk word transfer with bounds checking
+        while pos + 4 <= input.len() {
+            let word = u32::from_le_bytes([
+                input[pos],
+                input[pos + 1],
+                input[pos + 2],
+                input[pos + 3]
+            ]);
+            self.store_u32((addr + pos).waddr(), word)?;
+            pos += 4;
+        }
+
+        while pos < input.len() {
+            self.store_u8(addr + pos, input[pos])?;
+            pos += 1;
+        }
+
         Ok(())
     }
 

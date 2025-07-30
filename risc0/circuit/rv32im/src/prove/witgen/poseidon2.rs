@@ -279,7 +279,8 @@ impl Checksum {
             coeffs.1 += baby_bear::P as i32;
         }
         let coeffs = (coeffs.0 as u32, coeffs.1 as u32);
-        self.zcheck += self.powers[2 * idx] * ExtVal::from_u32(coeffs.0);
-        self.zcheck += self.powers[2 * idx + 1] * ExtVal::from_u32(coeffs.1);
+        let idx2 = 2 * idx;
+        self.zcheck += self.powers[idx2] * ExtVal::from_u32(coeffs.0);
+        self.zcheck += self.powers[idx2 + 1] * ExtVal::from_u32(coeffs.1);
     }
 }

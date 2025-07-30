@@ -87,16 +87,17 @@ impl PageStates {
     #[inline(always)]
     pub(crate) fn set(&mut self, index: u32, value: PageState) {
         let set_before = self.get(index) != PageState::Unloaded;
+        let index2 = index as usize * 2;
         match value {
             PageState::Unloaded => unimplemented!(),
             PageState::Loaded => {
                 // b01 => Loaded
-                self.states.set(index as usize * 2, false);
-                self.states.set(index as usize * 2 + 1, true);
+                self.states.set(index2, false);
+                self.states.set(index2 + 1, true);
             }
             PageState::Dirty => {
                 // b10 | b11 => Dirty
-                self.states.set(index as usize * 2, true);
+                self.states.set(index2, true);
             }
         }
 
