@@ -101,7 +101,6 @@ pub struct DecodedInstruction {
     rs1: u32,
     func3: u32,
     rd: u32,
-    opcode: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,7 +173,6 @@ impl DecodedInstruction {
             rs1: (insn & 0x000f8000) >> 15,
             func3: (insn & 0x00007000) >> 12,
             rd: (insn & 0x00000f80) >> 7,
-            opcode: insn & 0x0000007f,
         }
     }
 
@@ -209,7 +207,100 @@ impl DecodedInstruction {
 
 impl Emulator {
     pub fn new() -> Self {
-        Self {}
+        Self
+    }
+
+    // Optimized instruction decoder using lookup table
+    #[inline(always)]
+    fn decode_instruction_fast(&self, word: u32) -> Option<InsnKind> {
+        let opcode = word & 0x7F;
+        let func3 = (word >> 12) & 0x7;
+        let func7 = (word >> 25) & 0x7F;
+
+        // Fast path for common instructions
+        match opcode {
+            0x33 => { // R-format arithmetic
+                match (func3, func7) {
+                    (0, 0x00) => Some(InsnKind::Add),
+                    (0, 0x20) => Some(InsnKind::Sub),
+                    (1, 0x00) => Some(InsnKind::Sll),
+                    (2, 0x00) => Some(InsnKind::Slt),
+                    (3, 0x00) => Some(InsnKind::SltU),
+                    (4, 0x00) => Some(InsnKind::Xor),
+                    (5, 0x00) => Some(InsnKind::Srl),
+                    (5, 0x20) => Some(InsnKind::Sra),
+                    (6, 0x00) => Some(InsnKind::Or),
+                    (7, 0x00) => Some(InsnKind::And),
+                    (0, 0x01) => Some(InsnKind::Mul),
+                    (1, 0x01) => Some(InsnKind::MulH),
+                    (2, 0x01) => Some(InsnKind::MulHSU),
+                    (3, 0x01) => Some(InsnKind::MulHU),
+                    (4, 0x01) => Some(InsnKind::Div),
+                    (5, 0x01) => Some(InsnKind::DivU),
+                    (6, 0x01) => Some(InsnKind::Rem),
+                    (7, 0x01) => Some(InsnKind::RemU),
+                    _ => None,
+                }
+            },
+            0x13 => { // I-format arithmetic
+                match func3 {
+                    0 => Some(InsnKind::AddI),
+                    1 => if func7 == 0 { Some(InsnKind::SllI) } else { None },
+                    2 => Some(InsnKind::SltI),
+                    3 => Some(InsnKind::SltIU),
+                    4 => Some(InsnKind::XorI),
+                    5 => match func7 {
+                        0x00 => Some(InsnKind::SrlI),
+                        0x20 => Some(InsnKind::SraI),
+                        _ => None,
+                    },
+                    6 => Some(InsnKind::OrI),
+                    7 => Some(InsnKind::AndI),
+                    _ => None,
+                }
+            },
+            0x03 => { // I-format loads
+                match func3 {
+                    0 => Some(InsnKind::Lb),
+                    1 => Some(InsnKind::Lh),
+                    2 => Some(InsnKind::Lw),
+                    4 => Some(InsnKind::LbU),
+                    5 => Some(InsnKind::LhU),
+                    _ => None,
+                }
+            },
+            0x23 => { // S-format stores
+                match func3 {
+                    0 => Some(InsnKind::Sb),
+                    1 => Some(InsnKind::Sh),
+                    2 => Some(InsnKind::Sw),
+                    _ => None,
+                }
+            },
+            0x37 => Some(InsnKind::Lui), // U-format lui
+            0x17 => Some(InsnKind::Auipc), // U-format auipc
+            0x63 => { // B-format branches
+                match func3 {
+                    0 => Some(InsnKind::Beq),
+                    1 => Some(InsnKind::Bne),
+                    4 => Some(InsnKind::Blt),
+                    5 => Some(InsnKind::Bge),
+                    6 => Some(InsnKind::BltU),
+                    7 => Some(InsnKind::BgeU),
+                    _ => None,
+                }
+            },
+            0x6F => Some(InsnKind::Jal), // J-format jal
+            0x67 => Some(InsnKind::JalR), // I-format jalr
+            0x73 => { // System instructions
+                match (func3, func7) {
+                    (0, 0x18) => Some(InsnKind::Mret),
+                    (0, 0x00) => Some(InsnKind::Eany),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
     }
 
     fn trace_instruction<C: EmuContext>(
@@ -223,69 +314,49 @@ impl Emulator {
 
     #[inline(always)]
     fn exec_rv32im<C: EmuContext>(&mut self, ctx: &mut C, word: u32) -> Result<Option<InsnKind>> {
-        let decoded = DecodedInstruction::new(word);
+        let kind = self.decode_instruction_fast(word);
+        if kind.is_none() {
+            return Ok(ctx
+                .trap(Exception::IllegalInstruction(word, line!()))?
+                .then_some(InsnKind::Invalid));
+        }
 
-        match (decoded.opcode, decoded.func3, decoded.func7) {
-            // R-format arithmetic ops
-            (0b0110011, 0b000, 0b0000000) => self.step_compute(ctx, InsnKind::Add, decoded),
-            (0b0110011, 0b000, 0b0100000) => self.step_compute(ctx, InsnKind::Sub, decoded),
-            (0b0110011, 0b001, 0b0000000) => self.step_compute(ctx, InsnKind::Sll, decoded),
-            (0b0110011, 0b010, 0b0000000) => self.step_compute(ctx, InsnKind::Slt, decoded),
-            (0b0110011, 0b011, 0b0000000) => self.step_compute(ctx, InsnKind::SltU, decoded),
-            (0b0110011, 0b101, 0b0000000) => self.step_compute(ctx, InsnKind::Srl, decoded),
-            (0b0110011, 0b100, 0b0000000) => self.step_compute(ctx, InsnKind::Xor, decoded),
-            (0b0110011, 0b101, 0b0100000) => self.step_compute(ctx, InsnKind::Sra, decoded),
-            (0b0110011, 0b110, 0b0000000) => self.step_compute(ctx, InsnKind::Or, decoded),
-            (0b0110011, 0b111, 0b0000000) => self.step_compute(ctx, InsnKind::And, decoded),
-            (0b0110011, 0b000, 0b0000001) => self.step_compute(ctx, InsnKind::Mul, decoded),
-            (0b0110011, 0b001, 0b0000001) => self.step_compute(ctx, InsnKind::MulH, decoded),
-            (0b0110011, 0b010, 0b0000001) => self.step_compute(ctx, InsnKind::MulHSU, decoded),
-            (0b0110011, 0b011, 0b0000001) => self.step_compute(ctx, InsnKind::MulHU, decoded),
-            (0b0110011, 0b100, 0b0000001) => self.step_compute(ctx, InsnKind::Div, decoded),
-            (0b0110011, 0b101, 0b0000001) => self.step_compute(ctx, InsnKind::DivU, decoded),
-            (0b0110011, 0b110, 0b0000001) => self.step_compute(ctx, InsnKind::Rem, decoded),
-            (0b0110011, 0b111, 0b0000001) => self.step_compute(ctx, InsnKind::RemU, decoded),
-            // I-format arithmetic ops
-            (0b0010011, 0b000, _) => self.step_compute(ctx, InsnKind::AddI, decoded),
-            (0b0010011, 0b001, 0b0000000) => self.step_compute(ctx, InsnKind::SllI, decoded),
-            (0b0010011, 0b010, _) => self.step_compute(ctx, InsnKind::SltI, decoded),
-            (0b0010011, 0b011, _) => self.step_compute(ctx, InsnKind::SltIU, decoded),
-            (0b0010011, 0b100, _) => self.step_compute(ctx, InsnKind::XorI, decoded),
-            (0b0010011, 0b101, 0b0000000) => self.step_compute(ctx, InsnKind::SrlI, decoded),
-            (0b0010011, 0b101, 0b0100000) => self.step_compute(ctx, InsnKind::SraI, decoded),
-            (0b0010011, 0b110, _) => self.step_compute(ctx, InsnKind::OrI, decoded),
-            (0b0010011, 0b111, _) => self.step_compute(ctx, InsnKind::AndI, decoded),
-            // I-format memory loads
-            (0b0000011, 0b000, _) => self.step_load(ctx, InsnKind::Lb, decoded),
-            (0b0000011, 0b001, _) => self.step_load(ctx, InsnKind::Lh, decoded),
-            (0b0000011, 0b010, _) => self.step_load(ctx, InsnKind::Lw, decoded),
-            (0b0000011, 0b100, _) => self.step_load(ctx, InsnKind::LbU, decoded),
-            (0b0000011, 0b101, _) => self.step_load(ctx, InsnKind::LhU, decoded),
-            // S-format memory stores
-            (0b0100011, 0b000, _) => self.step_store(ctx, InsnKind::Sb, decoded),
-            (0b0100011, 0b001, _) => self.step_store(ctx, InsnKind::Sh, decoded),
-            (0b0100011, 0b010, _) => self.step_store(ctx, InsnKind::Sw, decoded),
-            // U-format lui
-            (0b0110111, _, _) => self.step_compute(ctx, InsnKind::Lui, decoded),
-            // U-format auipc
-            (0b0010111, _, _) => self.step_compute(ctx, InsnKind::Auipc, decoded),
-            // B-format branch
-            (0b1100011, 0b000, _) => self.step_compute(ctx, InsnKind::Beq, decoded),
-            (0b1100011, 0b001, _) => self.step_compute(ctx, InsnKind::Bne, decoded),
-            (0b1100011, 0b100, _) => self.step_compute(ctx, InsnKind::Blt, decoded),
-            (0b1100011, 0b101, _) => self.step_compute(ctx, InsnKind::Bge, decoded),
-            (0b1100011, 0b110, _) => self.step_compute(ctx, InsnKind::BltU, decoded),
-            (0b1100011, 0b111, _) => self.step_compute(ctx, InsnKind::BgeU, decoded),
-            // J-format jal
-            (0b1101111, _, _) => self.step_compute(ctx, InsnKind::Jal, decoded),
-            // I-format jalr
-            (0b1100111, _, _) => self.step_compute(ctx, InsnKind::JalR, decoded),
-            // System instruction
-            (0b1110011, 0b000, 0b0011000) => self.step_system(ctx, InsnKind::Mret, decoded),
-            (0b1110011, 0b000, 0b0000000) => self.step_system(ctx, InsnKind::Eany, decoded),
-            _ => Ok(ctx
-                .trap(Exception::IllegalInstruction(decoded.insn, line!()))?
-                .then_some(InsnKind::Invalid)),
+        let decoded = DecodedInstruction::new(word);
+        match kind.unwrap() {
+            // Fast path for common arithmetic instructions
+            InsnKind::Add | InsnKind::Sub | InsnKind::Xor | InsnKind::Or | InsnKind::And |
+            InsnKind::Sll | InsnKind::Srl | InsnKind::Sra | InsnKind::Slt | InsnKind::SltU |
+            InsnKind::AddI | InsnKind::XorI | InsnKind::OrI | InsnKind::AndI |
+            InsnKind::SllI | InsnKind::SrlI | InsnKind::SraI | InsnKind::SltI | InsnKind::SltIU => {
+                self.step_compute(ctx, kind.unwrap(), decoded)
+            }
+            // Fast path for loads
+            InsnKind::Lb | InsnKind::Lh | InsnKind::Lw | InsnKind::LbU | InsnKind::LhU => {
+                self.step_load(ctx, kind.unwrap(), decoded)
+            }
+            // Fast path for stores
+            InsnKind::Sb | InsnKind::Sh | InsnKind::Sw => {
+                self.step_store(ctx, kind.unwrap(), decoded)
+            }
+            // System instructions
+            InsnKind::Eany | InsnKind::Mret => {
+                self.step_system(ctx, kind.unwrap(), decoded)
+            }
+            // Branch instructions
+            InsnKind::Beq | InsnKind::Bne | InsnKind::Blt | InsnKind::Bge | InsnKind::BltU | InsnKind::BgeU |
+            InsnKind::Jal | InsnKind::JalR => {
+                self.step_compute(ctx, kind.unwrap(), decoded)
+            }
+            // Other instructions
+            InsnKind::Lui | InsnKind::Auipc => {
+                self.step_compute(ctx, kind.unwrap(), decoded)
+            }
+            // Multiplication/division
+            InsnKind::Mul | InsnKind::MulH | InsnKind::MulHSU | InsnKind::MulHU |
+            InsnKind::Div | InsnKind::DivU | InsnKind::Rem | InsnKind::RemU => {
+                self.step_compute(ctx, kind.unwrap(), decoded)
+            }
+            InsnKind::Invalid => Ok(Some(InsnKind::Invalid)),
         }
     }
 

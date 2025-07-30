@@ -96,9 +96,8 @@ pub(crate) trait Risc0Context {
         Ok(bytes[byte_offset])
     }
 
-    #[inline(always)]
     fn load_region(&mut self, op: LoadOp, addr: ByteAddr, size: usize) -> Result<Vec<u8>> {
-        let mut region = Vec::with_capacity(size); // Avoid initialization cost
+        let mut region = vec![0u8; size]; // Pre-allocate with exact size
         let mut pos = 0;
 
         if addr.is_aligned() && (0 == size % WORD_SIZE) {
@@ -107,16 +106,16 @@ pub(crate) trait Risc0Context {
                 let word = self.load_u32(op, waddr.postfix_inc())?;
                 let bytes = word.to_le_bytes();
 
-                // Direct array access - more efficient than extend_from_slice
-                region.push(bytes[0]);
-                region.push(bytes[1]);
-                region.push(bytes[2]);
-                region.push(bytes[3]);
+                // Direct array access instead of extend_from_slice
+                region[pos] = bytes[0];
+                region[pos + 1] = bytes[1];
+                region[pos + 2] = bytes[2];
+                region[pos + 3] = bytes[3];
                 pos += 4;
             }
         } else {
-            for i in 0..size {
-                region.push(self.load_u8(op, addr + i)?);
+            for (i, byte) in region.iter_mut().enumerate() {
+                *byte = self.load_u8(op, addr + i)?; // Direct indexing
             }
         }
         Ok(region)
@@ -124,8 +123,8 @@ pub(crate) trait Risc0Context {
 
     fn store_u32(&mut self, addr: WordAddr, word: u32) -> Result<()>;
 
-    #[inline(always)]
     fn store_region(&mut self, addr: ByteAddr, input: &[u8]) -> Result<()> {
+        // Always use word-aligned approach with padding handling
         let start = addr.0 as usize;
         let mut pos = 0;
 
@@ -135,18 +134,16 @@ pub(crate) trait Risc0Context {
             pos += 1;
         }
 
-        // Bulk word transfer with bounds checking
+        // Bulk word transfer
         while pos + 4 <= input.len() {
             let word = u32::from_le_bytes([
-                input[pos],
-                input[pos + 1],
-                input[pos + 2],
-                input[pos + 3]
+                input[pos], input[pos + 1], input[pos + 2], input[pos + 3]
             ]);
             self.store_u32((addr + pos).waddr(), word)?;
             pos += 4;
         }
 
+        // Handle remainder
         while pos < input.len() {
             self.store_u8(addr + pos, input[pos])?;
             pos += 1;
