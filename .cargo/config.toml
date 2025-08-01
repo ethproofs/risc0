@@ -4,4 +4,9 @@ xfast = "run --package xtask --no-default-features --"
 xtask = "run --package xtask --release --"
 
 [build]
-rustflags = ["-Dclippy::all", "-Dwarnings"]
+rustflags = ["-Dclippy::all", "-Dwarnings", "-Ctarget-cpu=native"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

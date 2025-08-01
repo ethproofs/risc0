@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use opentelemetry::metrics::{Counter, Meter};
@@ -82,6 +83,30 @@ impl<StreamT: AsyncWrite + Unpin> RpcSender<StreamT> {
             .await
     }
 
+    /// Send multiple messages in a single batch to reduce network overhead
+    #[allow(dead_code)]
+    pub async fn tell_batch(&self, messages: &[&impl Serialize]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        // For small batches, send them individually to maintain compatibility
+        if messages.len() <= 3 {
+            for msg in messages {
+                self.tell(msg).await?;
+            }
+            return Ok(());
+        }
+
+        // For larger batches, combine them into a single message
+        let batch_data = bincode::serialize(&messages)?;
+        let message_id = self.registry.lock().unwrap().next_message_id();
+
+        // Create a wrapper message that contains the batch
+        let batch_msg = BatchWrapper { messages: batch_data };
+        self.send(&batch_msg, message_id, RpcMessageKind::ExpectsNoResponse).await
+    }
+
     /// Reply to a ask given to us.
     pub async fn respond(&self, msg: &impl Serialize, message_id: RpcMessageId) -> Result<()> {
         self.send(msg, message_id, RpcMessageKind::IsResponse).await
@@ -92,6 +117,12 @@ impl<StreamT: AsyncWrite + Unpin> RpcSender<StreamT> {
         self.stream.lock().await.shutdown().await?;
         Ok(())
     }
+}
+
+/// Wrapper for batched messages
+#[derive(Serialize, Deserialize)]
+struct BatchWrapper {
+    messages: Vec<u8>,
 }
 
 //  ____               _
@@ -409,6 +440,209 @@ impl RpcStream for UnixStream {
 
     fn into_split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         UnixStream::into_split(self)
+    }
+}
+
+/// Configuration for RPC batching
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct RpcBatchConfig {
+    /// Maximum number of messages to batch together
+    pub max_batch_size: usize,
+    /// Maximum time to wait before sending a batch
+    pub max_batch_delay: Duration,
+    /// Maximum size of a batch in bytes
+    pub max_batch_bytes: usize,
+}
+
+impl Default for RpcBatchConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 10,
+            max_batch_delay: Duration::from_millis(1),
+            max_batch_bytes: 64 * 1024, // 64KB
+        }
+    }
+}
+
+/// A batched RPC message containing multiple individual messages
+#[derive(Serialize, Deserialize)]
+struct BatchedRpcMessage {
+    messages: Vec<BatchedMessage>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BatchedMessage {
+    message_id: RpcMessageId,
+    kind: RpcMessageKind,
+    payload: Vec<u8>,
+}
+
+/// Enhanced RPC sender with batching capabilities
+#[allow(dead_code)]
+pub struct BatchedRpcSender<StreamT> {
+    inner: RpcSender<StreamT>,
+    batch_config: RpcBatchConfig,
+    pending_batch: Arc<TokioMutex<Vec<BatchedMessage>>>,
+    last_batch_time: Arc<TokioMutex<Instant>>,
+    batch_tx_messages: Counter<u64>,
+    batch_tx_bytes: Counter<u64>,
+}
+
+#[allow(dead_code)]
+impl<StreamT: AsyncWrite + Unpin> BatchedRpcSender<StreamT> {
+    pub fn new(
+        sender: RpcSender<StreamT>,
+        config: RpcBatchConfig,
+        meter: Meter,
+    ) -> Self {
+        let batch_tx_messages = meter.u64_counter("batch_tx_messages").build();
+        let batch_tx_bytes = meter.u64_counter("batch_tx_bytes").build();
+
+        Self {
+            inner: sender,
+            batch_config: config,
+            pending_batch: Arc::new(TokioMutex::new(Vec::new())),
+            last_batch_time: Arc::new(TokioMutex::new(Instant::now())),
+            batch_tx_messages,
+            batch_tx_bytes,
+        }
+    }
+
+    /// Send a message with batching support
+    pub async fn send_batched(
+        &self,
+        msg: &impl Serialize,
+        message_id: RpcMessageId,
+    ) -> Result<()> {
+        let payload = bincode::serialize(msg)?;
+        let batched_msg = BatchedMessage {
+            message_id,
+            kind: crate::actors::rpc::RpcMessageKind::ExpectsNoResponse,
+            payload,
+        };
+
+        let mut batch = self.pending_batch.lock().await;
+        let mut last_time = self.last_batch_time.lock().await;
+
+        batch.push(batched_msg);
+
+        let should_flush = self.should_flush_batch(&batch, *last_time).await;
+
+        if should_flush {
+            self.flush_batch(&mut batch).await?;
+            *last_time = Instant::now();
+        }
+
+        Ok(())
+    }
+
+    async fn should_flush_batch(
+        &self,
+        batch: &[BatchedMessage],
+        last_time: Instant,
+    ) -> bool {
+        // Flush if we've reached max batch size
+        if batch.len() >= self.batch_config.max_batch_size {
+            return true;
+        }
+
+        // Flush if we've exceeded max batch bytes
+        let batch_bytes: usize = batch.iter().map(|msg| msg.payload.len()).sum();
+        if batch_bytes >= self.batch_config.max_batch_bytes {
+            return true;
+        }
+
+        // Flush if we've exceeded max delay
+        if last_time.elapsed() >= self.batch_config.max_batch_delay {
+            return true;
+        }
+
+        false
+    }
+
+    async fn flush_batch(&self, batch: &mut Vec<BatchedMessage>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let batched_msg = BatchedRpcMessage {
+            messages: std::mem::take(batch),
+        };
+
+        // Use a special message ID for batched messages
+        let batch_message_id = self.inner.registry.lock().unwrap().next_message_id();
+
+        // Send the batched message using the underlying RPC system
+        self.inner.send(&batched_msg, batch_message_id, crate::actors::rpc::RpcMessageKind::ExpectsNoResponse).await?;
+
+        // Update metrics
+        let total_bytes: usize = batched_msg.messages.iter().map(|msg| msg.payload.len()).sum();
+        self.batch_tx_messages.add(batched_msg.messages.len() as u64, &[]);
+        self.batch_tx_bytes.add(total_bytes as u64, &[]);
+
+        Ok(())
+    }
+
+    /// Force flush any pending batched messages
+    pub async fn flush(&self) -> Result<()> {
+        let mut batch = self.pending_batch.lock().await;
+        self.flush_batch(&mut batch).await
+    }
+
+    /// Get access to the underlying RPC sender for non-batched operations
+    pub fn inner(&self) -> &RpcSender<StreamT> {
+        &self.inner
+    }
+}
+
+/// Simple connection reuse for RPC systems
+#[allow(dead_code)]
+pub struct ConnectionReuse {
+    last_connection: Arc<TokioMutex<Option<TcpStream>>>,
+    meter: Meter,
+    reuse_hits: Counter<u64>,
+    reuse_misses: Counter<u64>,
+}
+
+#[allow(dead_code)]
+impl ConnectionReuse {
+    pub fn new(meter: Meter) -> Self {
+        let reuse_hits = meter.u64_counter("reuse_hits").build();
+        let reuse_misses = meter.u64_counter("reuse_misses").build();
+
+        Self {
+            last_connection: Arc::new(TokioMutex::new(None)),
+            meter,
+            reuse_hits,
+            reuse_misses,
+        }
+    }
+
+    /// Get a connection, reusing the last one if possible
+    pub async fn get_connection(&self, addr: &str) -> Result<TcpStream> {
+        let mut last_conn = self.last_connection.lock().await;
+
+        if let Some(stream) = last_conn.take() {
+            // Check if the stream is still valid
+            if let Ok(peer_addr) = stream.peer_addr() {
+                if peer_addr.to_string() == addr {
+                    self.reuse_hits.add(1, &[]);
+                    return Ok(stream);
+                }
+            }
+        }
+
+        // Create new connection
+        let stream = TcpStream::connect(addr).await?;
+        self.reuse_misses.add(1, &[]);
+        Ok(stream)
+    }
+
+    /// Store a connection for potential reuse
+    pub async fn store_connection(&self, stream: TcpStream) {
+        let mut last_conn = self.last_connection.lock().await;
+        *last_conn = Some(stream);
     }
 }
 

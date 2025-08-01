@@ -334,15 +334,17 @@ impl PagedMemory {
         }
     }
 
+    #[inline]
     fn peek_ram(&mut self, addr: WordAddr) -> Result<u32> {
         let page_idx = addr.page_idx();
+
         if let Some(cache_idx) = self.page_table.get(page_idx) {
-            // Loaded, get from cache
-            Ok(self.page_cache[cache_idx].load(addr))
-        } else {
-            // Unloaded, peek into image
-            Ok(self.image.get_page(page_idx)?.load(addr))
+            return Ok(self.page_cache[cache_idx].load(addr));
         }
+
+        // Slow path: load from image
+        let page = self.image.get_page(page_idx)?;
+        Ok(page.load(addr))
     }
 
     pub(crate) fn peek(&mut self, addr: WordAddr) -> Result<u32> {

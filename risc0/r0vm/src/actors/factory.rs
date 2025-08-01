@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use std::{collections::HashMap, net::SocketAddr};
+use std::time::{Duration, Instant};
 
 use kameo::{error::Infallible, prelude::*};
 use multi_index_map::MultiIndexMap;
 use tokio::{
     net::{tcp, TcpStream},
     task::JoinHandle,
+    sync::Mutex as TokioMutex,
 };
+use std::sync::Arc;
 
 use super::{
     job::JobActor,
@@ -258,6 +261,26 @@ type WriteStream = metrics::OwnedWriteHalfWithMetrics<tcp::OwnedWriteHalf>;
 pub(crate) struct RemoteFactoryActor {
     rpc_sender: RpcSender<WriteStream>,
     rpc_receiver_handle: JoinHandle<()>,
+    // Message batching buffers
+    pending_updates: Arc<TokioMutex<Vec<TaskUpdateMsg>>>,
+    pending_done_messages: Arc<TokioMutex<Vec<TaskDoneMsg>>>,
+    last_flush: Arc<TokioMutex<Instant>>,
+    batch_config: BatchConfig,
+}
+
+#[derive(Clone)]
+struct BatchConfig {
+    max_batch_size: usize,
+    max_batch_delay: Duration,
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 10,
+            max_batch_delay: Duration::from_millis(1),
+        }
+    }
 }
 
 impl RemoteFactoryActor {
@@ -278,7 +301,46 @@ impl RemoteFactoryActor {
         Ok(Self {
             rpc_sender,
             rpc_receiver_handle,
+            pending_updates: Arc::new(TokioMutex::new(Vec::new())),
+            pending_done_messages: Arc::new(TokioMutex::new(Vec::new())),
+            last_flush: Arc::new(TokioMutex::new(Instant::now())),
+            batch_config: BatchConfig::default(),
         })
+    }
+
+    async fn should_flush_batch(&self, buffer_len: usize, last_flush: Instant) -> bool {
+        buffer_len >= self.batch_config.max_batch_size ||
+        last_flush.elapsed() >= self.batch_config.max_batch_delay
+    }
+
+    async fn flush_updates(&self) -> anyhow::Result<()> {
+        let mut updates = self.pending_updates.lock().await;
+        if !updates.is_empty() {
+            let updates_to_send = std::mem::take(&mut *updates);
+            let remote_requests: Vec<RemoteRequest> = updates_to_send
+                .into_iter()
+                .map(RemoteRequest::TaskUpdate)
+                .collect();
+
+            let refs: Vec<&RemoteRequest> = remote_requests.iter().collect();
+            self.rpc_sender.tell_batch(&refs).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_done_messages(&self) -> anyhow::Result<()> {
+        let mut done_messages = self.pending_done_messages.lock().await;
+        if !done_messages.is_empty() {
+            let messages_to_send = std::mem::take(&mut *done_messages);
+            let remote_requests: Vec<RemoteRequest> = messages_to_send
+                .into_iter()
+                .map(RemoteRequest::TaskDone)
+                .collect();
+
+            let refs: Vec<&RemoteRequest> = remote_requests.iter().collect();
+            self.rpc_sender.tell_batch(&refs).await?;
+        }
+        Ok(())
     }
 }
 
@@ -294,6 +356,10 @@ impl Actor for RemoteFactoryActor {
         _actor_ref: WeakActorRef<Self>,
         _reason: ActorStopReason,
     ) -> Result<(), Self::Error> {
+        // Flush any remaining messages before shutdown
+        self.flush_updates().await?;
+        self.flush_done_messages().await?;
+
         self.rpc_sender.shutdown().await?;
         self.rpc_receiver_handle.abort();
 
@@ -327,8 +393,26 @@ impl Message<TaskUpdateMsg> for RemoteFactoryActor {
         msg: TaskUpdateMsg,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let msg = RemoteRequest::TaskUpdate(msg);
-        self.rpc_sender.tell(&msg).await.unwrap();
+        // Add to pending updates
+        {
+            let mut updates = self.pending_updates.lock().await;
+            let last_flush = self.last_flush.lock().await;
+
+            updates.push(msg);
+
+            // Check if we should flush
+            if self.should_flush_batch(updates.len(), *last_flush).await {
+                drop(updates); // Release lock before flush
+                drop(last_flush);
+                if let Err(e) = self.flush_updates().await {
+                    tracing::error!("Failed to flush updates: {}", e);
+                }
+                {
+                    let mut last_flush = self.last_flush.lock().await;
+                    *last_flush = Instant::now();
+                }
+            }
+        }
     }
 }
 
@@ -340,7 +424,54 @@ impl Message<TaskDoneMsg> for RemoteFactoryActor {
         msg: TaskDoneMsg,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let msg = RemoteRequest::TaskDone(msg);
-        self.rpc_sender.tell(&msg).await.unwrap();
+        // Add to pending done messages
+        {
+            let mut done_messages = self.pending_done_messages.lock().await;
+            let last_flush = self.last_flush.lock().await;
+
+            done_messages.push(msg);
+
+            // Check if we should flush
+            if self.should_flush_batch(done_messages.len(), *last_flush).await {
+                drop(done_messages); // Release lock before flush
+                drop(last_flush);
+                if let Err(e) = self.flush_done_messages().await {
+                    tracing::error!("Failed to flush done messages: {}", e);
+                }
+                {
+                    let mut last_flush = self.last_flush.lock().await;
+                    *last_flush = Instant::now();
+                }
+            }
+        }
+    }
+}
+
+// Example of how to use batching when you have multiple messages:
+impl RemoteFactoryActor {
+    /// Send multiple task updates in a single batch
+    #[allow(dead_code)]
+    pub async fn send_task_updates_batch(&self, updates: Vec<TaskUpdateMsg>) -> anyhow::Result<()> {
+        let remote_requests: Vec<RemoteRequest> = updates
+            .into_iter()
+            .map(RemoteRequest::TaskUpdate)
+            .collect();
+
+        // Convert to references for tell_batch
+        let refs: Vec<&RemoteRequest> = remote_requests.iter().collect();
+        self.rpc_sender.tell_batch(&refs).await
+    }
+
+    /// Send multiple task done messages in a single batch
+    #[allow(dead_code)]
+    pub async fn send_task_done_batch(&self, done_messages: Vec<TaskDoneMsg>) -> anyhow::Result<()> {
+        let remote_requests: Vec<RemoteRequest> = done_messages
+            .into_iter()
+            .map(RemoteRequest::TaskDone)
+            .collect();
+
+        // Convert to references for tell_batch
+        let refs: Vec<&RemoteRequest> = remote_requests.iter().collect();
+        self.rpc_sender.tell_batch(&refs).await
     }
 }

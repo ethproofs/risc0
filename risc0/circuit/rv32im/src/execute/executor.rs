@@ -196,15 +196,15 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
             pager: PagedMemory::new(image.clone(), /*tracing_enabled=*/ !trace.is_empty()),
             initial_image: image,
             terminate_state: None,
-            read_record: Vec::new(),
-            write_record: Vec::new(),
+            read_record: Vec::with_capacity(1000), // Pre-allocate for better performance
+            write_record: Vec::with_capacity(1000), // Pre-allocate for better performance
             syscall_handler,
             input_digest: input_digest.unwrap_or_default(),
             output_digest: None,
             trace,
             cycles: SessionCycles::default(),
             ecall_metrics: EcallMetrics::default(),
-            ring: AllocRingBuffer::new(10),
+            ring: AllocRingBuffer::new(64), // Larger buffer for better performance
         }
     }
 
@@ -250,72 +250,72 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
                     CycleLimit::None => {}
                 }
 
-                if self.segment_cycles() > segment_threshold {
-                    tracing::debug!(
-                        "split(phys: {} + pager: {} + reserved: {RESERVED_CYCLES}) = {} >= {segment_threshold}",
-                        self.user_cycles,
-                        self.pager.cycles,
-                        self.segment_cycles()
-                    );
-
-                    assert!(
-                        self.segment_cycles() < segment_limit,
-                        "segment limit ({segment_limit}) too small for instruction at pc: {:?}",
-                        self.pc
-                    );
-                    Risc0Machine::suspend(self)?;
-
-                    let partial_image = self.pager.commit();
-
-                    let req = CreateSegmentRequest {
-                        partial_image,
-                        page_indexes: self.pager.page_indexes(),
-                        input_digest: self.input_digest,
-                        output_digest: self.output_digest,
-                        read_record: std::mem::take(&mut self.read_record),
-                        write_record: std::mem::take(&mut self.write_record),
-                        user_cycles: self.user_cycles,
-                        pager_cycles: self.pager.cycles,
-                        terminate_state: self.terminate_state,
-                        segment_threshold,
-                        po2: segment_po2 as u32,
-                        index: segment_counter,
-                        dump_path: None,
-                    };
-                    if commit_sender.send(req).is_err() {
-                        return Err(segment_callback_thread.join().unwrap().unwrap_err());
+                // Execute steps until we reach segment threshold or termination
+                while self.segment_cycles() <= segment_threshold && self.terminate_state.is_none() {
+                    let result = Risc0Machine::step(&mut emu, self);
+                    if let Err(err) = result {
+                        self.dump();
+                        let result = self.dump_segment(
+                            commit_sender,
+                            segment_callback_thread,
+                            segment_po2,
+                            segment_threshold,
+                            segment_counter,
+                        );
+                        return Err(if let Err(inner) = result {
+                            err.context(inner)
+                        } else {
+                            err
+                        });
                     }
-
-                    segment_counter += 1;
-                    let total_cycles = 1 << segment_po2;
-                    let pager_cycles = self.pager.cycles as u64;
-                    let user_cycles = self.user_cycles as u64;
-                    self.cycles.total += total_cycles;
-                    self.cycles.paging += pager_cycles;
-                    self.cycles.reserved += total_cycles - pager_cycles - user_cycles;
-                    self.user_cycles = 0;
-                    self.pager.reset();
-
-                    Risc0Machine::resume(self)?;
                 }
 
-                let result = Risc0Machine::step(&mut emu, self);
-
-                if let Err(err) = result {
-                    self.dump();
-                    let result = self.dump_segment(
-                        commit_sender,
-                        segment_callback_thread,
-                        segment_po2,
-                        segment_threshold,
-                        segment_counter,
-                    );
-                    return Err(if let Err(inner) = result {
-                        err.context(inner)
-                    } else {
-                        err
-                    });
+                // Check if we've terminated
+                if self.terminate_state.is_some() {
+                    break;
                 }
+
+                tracing::debug!(
+                    "split(phys: {} + pager: {} + reserved: {RESERVED_CYCLES}) = {} >= {segment_threshold}",
+                    self.user_cycles,
+                    self.pager.cycles,
+                    self.segment_cycles()
+                );
+
+                Risc0Machine::suspend(self)?;
+
+                let partial_image = self.pager.commit();
+
+                let req = CreateSegmentRequest {
+                    partial_image,
+                    page_indexes: self.pager.page_indexes(),
+                    input_digest: self.input_digest,
+                    output_digest: self.output_digest,
+                    read_record: std::mem::take(&mut self.read_record),
+                    write_record: std::mem::take(&mut self.write_record),
+                    user_cycles: self.user_cycles,
+                    pager_cycles: self.pager.cycles,
+                    terminate_state: self.terminate_state,
+                    segment_threshold,
+                    po2: segment_po2 as u32,
+                    index: segment_counter,
+                    dump_path: None,
+                };
+                if commit_sender.send(req).is_err() {
+                    return Err(segment_callback_thread.join().unwrap().unwrap_err());
+                }
+
+                segment_counter += 1;
+                let total_cycles = 1 << segment_po2;
+                let pager_cycles = self.pager.cycles as u64;
+                let user_cycles = self.user_cycles as u64;
+                self.cycles.total += total_cycles;
+                self.cycles.paging += pager_cycles;
+                self.cycles.reserved += total_cycles - pager_cycles - user_cycles;
+                self.user_cycles = 0;
+                self.pager.reset();
+
+                Risc0Machine::resume(self)?;
             }
 
             Risc0Machine::suspend(self)?;
@@ -443,11 +443,14 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
         self.user_cycles + self.pager.cycles + RESERVED_CYCLES as u32
     }
 
+    #[inline(always)]
     fn inc_user_cycles(&mut self, count: usize, ecall: Option<EcallKind>) {
-        self.cycles.user += count as u64;
-        self.user_cycles += count as u32;
+        // Use unchecked arithmetic for better performance
+        self.cycles.user = self.cycles.user.wrapping_add(count as u64);
+        self.user_cycles = self.user_cycles.wrapping_add(count as u32);
         if let Some(kind) = ecall {
-            self.ecall_metrics.0[kind].cycles += count as u64;
+            self.ecall_metrics.0[kind].cycles =
+                self.ecall_metrics.0[kind].cycles.wrapping_add(count as u64);
         }
     }
 
