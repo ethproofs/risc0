@@ -28,7 +28,7 @@ use super::{
     job::JobActor,
     metrics,
     protocol::{
-        factory::{DropJob, GetTask, SubmitTaskMsg, TaskDoneMsg, TaskUpdateMsg},
+        factory::{DropJob, GetTask, SubmitTaskMsg, TaskDoneMsg, TaskUpdateMsg, TaskUpdate},
         worker::TaskMsg,
         GlobalId, JobId, Task, TaskHeader, TaskKind, WorkerId,
     },
@@ -264,6 +264,7 @@ pub(crate) struct RemoteFactoryActor {
     // Message batching buffers
     pending_updates: Arc<TokioMutex<Vec<TaskUpdateMsg>>>,
     pending_done_messages: Arc<TokioMutex<Vec<TaskDoneMsg>>>,
+    pending_segments: Arc<TokioMutex<Vec<TaskUpdateMsg>>>, // New: batch segment data
     last_flush: Arc<TokioMutex<Instant>>,
     batch_config: BatchConfig,
 }
@@ -303,6 +304,7 @@ impl RemoteFactoryActor {
             rpc_receiver_handle,
             pending_updates: Arc::new(TokioMutex::new(Vec::new())),
             pending_done_messages: Arc::new(TokioMutex::new(Vec::new())),
+            pending_segments: Arc::new(TokioMutex::new(Vec::new())), // Initialize new buffer
             last_flush: Arc::new(TokioMutex::new(Instant::now())),
             batch_config: BatchConfig::default(),
         })
@@ -342,6 +344,21 @@ impl RemoteFactoryActor {
         }
         Ok(())
     }
+
+    async fn flush_segments(&self) -> anyhow::Result<()> {
+        let mut segments = self.pending_segments.lock().await;
+        if !segments.is_empty() {
+            let segments_to_send = std::mem::take(&mut *segments);
+            let remote_requests: Vec<RemoteRequest> = segments_to_send
+                .into_iter()
+                .map(RemoteRequest::TaskUpdate)
+                .collect();
+
+            let refs: Vec<&RemoteRequest> = remote_requests.iter().collect();
+            self.rpc_sender.tell_batch(&refs).await?;
+        }
+        Ok(())
+    }
 }
 
 impl Actor for RemoteFactoryActor {
@@ -359,6 +376,7 @@ impl Actor for RemoteFactoryActor {
         // Flush any remaining messages before shutdown
         self.flush_updates().await?;
         self.flush_done_messages().await?;
+        self.flush_segments().await?; // New: flush segments too
 
         self.rpc_sender.shutdown().await?;
         self.rpc_receiver_handle.abort();
@@ -393,21 +411,43 @@ impl Message<TaskUpdateMsg> for RemoteFactoryActor {
         msg: TaskUpdateMsg,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // Add to pending updates
-        {
-            let mut updates = self.pending_updates.lock().await;
-            let last_flush = self.last_flush.lock().await;
+        // Check if this is a segment message (large data)
+        let is_segment = matches!(msg.payload, TaskUpdate::Segment(_));
 
-            updates.push(msg);
+        if is_segment {
+            // Handle segment data separately (large messages)
+            {
+                let mut segments = self.pending_segments.lock().await;
+                let last_flush = self.last_flush.lock().await;
 
-            // Check if we should flush
-            if self.should_flush_batch(updates.len(), *last_flush).await {
-                drop(updates); // Release lock before flush
-                drop(last_flush);
-                if let Err(e) = self.flush_updates().await {
-                    tracing::error!("Failed to flush updates: {}", e);
+                segments.push(msg);
+
+                // For segments, flush more aggressively due to large size
+                if segments.len() >= 3 || last_flush.elapsed() >= Duration::from_millis(5) {
+                    drop(segments);
+                    drop(last_flush);
+                    if let Err(e) = self.flush_segments().await {
+                        tracing::error!("Failed to flush segments: {}", e);
+                    }
+                    let mut last_flush = self.last_flush.lock().await;
+                    *last_flush = Instant::now();
                 }
-                {
+            }
+        } else {
+            // Handle regular updates (small messages)
+            {
+                let mut updates = self.pending_updates.lock().await;
+                let last_flush = self.last_flush.lock().await;
+
+                updates.push(msg);
+
+                // Check if we should flush
+                if self.should_flush_batch(updates.len(), *last_flush).await {
+                    drop(updates);
+                    drop(last_flush);
+                    if let Err(e) = self.flush_updates().await {
+                        tracing::error!("Failed to flush updates: {}", e);
+                    }
                     let mut last_flush = self.last_flush.lock().await;
                     *last_flush = Instant::now();
                 }
